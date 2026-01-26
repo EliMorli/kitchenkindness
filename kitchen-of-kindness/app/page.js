@@ -10,6 +10,7 @@ const families = [
   { id: 352, address: "5465 White Oak Ave Apt 212, Encino, CA 91316", instructions: "Leave at door", contact: "", bags: 1 },
   { id: 353, address: "18342 Ventura Blvd, CA", instructions: "Leave at door", contact: "", bags: 1 },
   { id: 354, address: "6413 Wystone Ave, Reseda, CA 91335", instructions: "Leave at door", contact: "", bags: 2 },
+  { id: 355, address: "12720 Burbank Blvd #127, Valley Village, CA 90035", instructions: "Leave at door", contact: "(718) 909-0378", bags: 3 },
 ];
 
 const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
