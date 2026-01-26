@@ -3,8 +3,8 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 
-// Family data from the PDF
-const families = [
+// Fallback family data (used if Supabase table doesn't exist yet)
+const fallbackFamilies = [
   { id: 350, address: "12619 Miranda St, North Hollywood, CA", instructions: "Leave at door", contact: "(818) 482-9559", bags: 3 },
   { id: 351, address: "5247 Corteen Pl, Valley Village, CA 91607", instructions: "Call when arrive", contact: "(323) 528-7899", bags: 2 },
   { id: 352, address: "5465 White Oak Ave Apt 212, Encino, CA 91316", instructions: "Leave at door", contact: "", bags: 1 },
@@ -41,6 +41,7 @@ export default function Home() {
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [families, setFamilies] = useState(fallbackFamilies);
   const [assignments, setAssignments] = useState({});
   const [currentWeekStart, setCurrentWeekStart] = useState(new Date(2026, 0, 25));
   const [showSignupModal, setShowSignupModal] = useState(false);
@@ -57,12 +58,42 @@ export default function Home() {
     setLoading(false);
   }, []);
 
-  // Load assignments from Supabase
+  // Load families and assignments from Supabase
   useEffect(() => {
     if (isAuthenticated) {
+      loadFamilies();
       loadAssignments();
     }
   }, [isAuthenticated]);
+
+  const loadFamilies = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('families')
+        .select('*')
+        .eq('active', true)
+        .order('family_id', { ascending: true });
+
+      if (error) {
+        console.log('Families table not found, using fallback data');
+        return;
+      }
+
+      if (data && data.length > 0) {
+        const formattedFamilies = data.map(f => ({
+          id: f.family_id,
+          address: f.address,
+          instructions: f.instructions || 'Leave at door',
+          contact: f.contact || '',
+          bags: (f.bags || 1) + (f.extra_bags || 0),
+          delivery_days: f.delivery_days || ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday']
+        }));
+        setFamilies(formattedFamilies);
+      }
+    } catch (error) {
+      console.error('Error loading families:', error);
+    }
+  };
 
   const loadAssignments = async () => {
     setLoading(true);
@@ -194,8 +225,16 @@ export default function Home() {
     return date.toDateString() === today.toDateString();
   };
 
+  const getFamiliesForDate = (date) => {
+    const dayName = dayNames[date.getDay()];
+    return families.filter(f => !f.delivery_days || f.delivery_days.includes(dayName));
+  };
+
   const getStats = () => {
-    const totalSlots = deliveryDates.length * families.length;
+    let totalSlots = 0;
+    deliveryDates.forEach(date => {
+      totalSlots += getFamiliesForDate(date).length;
+    });
     const filledSlots = Object.keys(assignments).length;
     const volunteerCounts = {};
     Object.values(assignments).forEach(a => {
@@ -295,10 +334,10 @@ export default function Home() {
                 <div className="day-date">{formatDate(date)}, 2026</div>
               </div>
               <div className="slots-container">
-                {families.map(family => {
+                {getFamiliesForDate(date).map(family => {
                   const key = getAssignmentKey(date, family.id);
                   const assignment = assignments[key];
-                  
+
                   return (
                     <div
                       key={family.id}
