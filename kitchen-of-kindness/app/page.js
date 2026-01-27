@@ -48,6 +48,7 @@ export default function Home() {
   const [selectedDate, setSelectedDate] = useState(null);
   const [selectedFamily, setSelectedFamily] = useState(null);
   const [volunteerName, setVolunteerName] = useState('');
+  const [volunteerPhone, setVolunteerPhone] = useState('');
 
   // Check if already authenticated
   useEffect(() => {
@@ -108,6 +109,7 @@ export default function Home() {
       data?.forEach(item => {
         assignmentMap[item.slot_key] = {
           volunteer: item.volunteer_name,
+          phone: item.volunteer_phone || '',
           signedUpAt: item.created_at
         };
       });
@@ -140,10 +142,10 @@ export default function Home() {
   };
 
   const handleSignup = async () => {
-    if (!volunteerName.trim()) return;
-    
+    if (!volunteerName.trim() || !volunteerPhone.trim()) return;
+
     const key = getAssignmentKey(selectedDate, selectedFamily.id);
-    
+
     try {
       const { error } = await supabase
         .from('delivery_assignments')
@@ -151,21 +153,24 @@ export default function Home() {
           slot_key: key,
           delivery_date: selectedDate.toISOString().split('T')[0],
           family_id: selectedFamily.id,
-          volunteer_name: volunteerName.trim()
+          volunteer_name: volunteerName.trim(),
+          volunteer_phone: volunteerPhone.trim()
         });
-      
+
       if (error) throw error;
-      
+
       setAssignments(prev => ({
         ...prev,
         [key]: {
           volunteer: volunteerName.trim(),
+          phone: volunteerPhone.trim(),
           signedUpAt: new Date().toISOString()
         }
       }));
-      
+
       setShowSignupModal(false);
       setVolunteerName('');
+      setVolunteerPhone('');
     } catch (error) {
       console.error('Error signing up:', error);
       alert('Error signing up. Please try again.');
@@ -352,7 +357,10 @@ export default function Home() {
                       </div>
                       {assignment ? (
                         <div className="slot-volunteer">
-                          <span className="volunteer-name">✓ {assignment.volunteer}</span>
+                          <div className="volunteer-info">
+                            <span className="volunteer-name">✓ {assignment.volunteer}</span>
+                            {assignment.phone && <span className="volunteer-phone">📞 {assignment.phone}</span>}
+                          </div>
                           <button
                             className="remove-btn"
                             onClick={(e) => {
@@ -434,10 +442,17 @@ export default function Home() {
               placeholder="Enter your name"
               value={volunteerName}
               onChange={(e) => setVolunteerName(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSignup()}
               autoFocus
             />
-            
+
+            <input
+              type="tel"
+              placeholder="Enter your phone number"
+              value={volunteerPhone}
+              onChange={(e) => setVolunteerPhone(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSignup()}
+            />
+
             <div className="modal-buttons">
               <button className="btn-secondary" onClick={() => setShowSignupModal(false)}>
                 Cancel

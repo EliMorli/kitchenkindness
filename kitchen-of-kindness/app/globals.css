@@ -311,10 +311,21 @@ body {
   border-top: 1px dashed #e0d5c8;
 }
 
+.volunteer-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .volunteer-name {
   font-weight: 600;
   color: #d35400;
   font-size: 0.85rem;
+}
+
+.volunteer-phone {
+  font-size: 0.75rem;
+  color: #8b7355;
 }
 
 .remove-btn {
