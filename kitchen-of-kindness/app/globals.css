@@ -278,7 +278,25 @@ body {
 .slot-taken {
   background: linear-gradient(135deg, #fff3e0 0%, #fff8e1 100%);
   border-color: #ffe0b2;
-  cursor: default;
+  cursor: pointer;
+}
+
+.slot-taken:hover {
+  border-color: #ffcc80;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(255, 152, 0, 0.2);
+}
+
+.slot-delivered {
+  background: linear-gradient(135deg, #e3f2fd 0%, #e8f5e9 100%);
+  border-color: #a5d6a7;
+  cursor: pointer;
+}
+
+.slot-delivered:hover {
+  border-color: #81c784;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(129, 199, 132, 0.3);
 }
 
 .slot-family {
@@ -326,6 +344,25 @@ body {
 .volunteer-phone {
   font-size: 0.75rem;
   color: #8b7355;
+}
+
+.delivered-badge {
+  background: #4caf50;
+  color: white;
+  font-size: 0.65rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+  margin-top: 2px;
+  display: inline-block;
+}
+
+.btn-delivered {
+  background: linear-gradient(135deg, #43a047 0%, #66bb6a 100%) !important;
+}
+
+.btn-delivered:hover {
+  box-shadow: 0 4px 16px rgba(76, 175, 80, 0.4) !important;
 }
 
 .remove-btn {

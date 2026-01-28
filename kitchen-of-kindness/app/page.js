@@ -49,6 +49,8 @@ export default function Home() {
   const [selectedFamily, setSelectedFamily] = useState(null);
   const [volunteerName, setVolunteerName] = useState('');
   const [volunteerPhone, setVolunteerPhone] = useState('');
+  const [showDetailsModal, setShowDetailsModal] = useState(false);
+  const [selectedAssignment, setSelectedAssignment] = useState(null);
 
   // Check if already authenticated
   useEffect(() => {
@@ -110,7 +112,8 @@ export default function Home() {
         assignmentMap[item.slot_key] = {
           volunteer: item.volunteer_name,
           phone: item.volunteer_phone || '',
-          signedUpAt: item.created_at
+          signedUpAt: item.created_at,
+          deliveredAt: item.delivered_at || null
         };
       });
       setAssignments(assignmentMap);
@@ -139,6 +142,39 @@ export default function Home() {
     setSelectedDate(date);
     setSelectedFamily(family);
     setShowSignupModal(true);
+  };
+
+  const handleTakenSlotClick = (date, family, assignment) => {
+    setSelectedDate(date);
+    setSelectedFamily(family);
+    setSelectedAssignment(assignment);
+    setShowDetailsModal(true);
+  };
+
+  const handleMarkDelivered = async () => {
+    const key = getAssignmentKey(selectedDate, selectedFamily.id);
+
+    try {
+      const { error } = await supabase
+        .from('delivery_assignments')
+        .update({ delivered_at: new Date().toISOString() })
+        .eq('slot_key', key);
+
+      if (error) throw error;
+
+      setAssignments(prev => ({
+        ...prev,
+        [key]: {
+          ...prev[key],
+          deliveredAt: new Date().toISOString()
+        }
+      }));
+
+      setShowDetailsModal(false);
+    } catch (error) {
+      console.error('Error marking as delivered:', error);
+      alert('Error marking as delivered. Please try again.');
+    }
   };
 
   const handleSignup = async () => {
@@ -346,8 +382,8 @@ export default function Home() {
                   return (
                     <div
                       key={family.id}
-                      className={`slot ${assignment ? 'slot-taken' : 'slot-open'}`}
-                      onClick={() => !assignment && handleSlotClick(date, family)}
+                      className={`slot ${assignment ? (assignment.deliveredAt ? 'slot-delivered' : 'slot-taken') : 'slot-open'}`}
+                      onClick={() => assignment ? handleTakenSlotClick(date, family, assignment) : handleSlotClick(date, family)}
                     >
                       <div className="slot-family">Family #{family.id}</div>
                       <div className="slot-address">{family.address}</div>
@@ -358,8 +394,9 @@ export default function Home() {
                       {assignment ? (
                         <div className="slot-volunteer">
                           <div className="volunteer-info">
-                            <span className="volunteer-name">✓ {assignment.volunteer}</span>
+                            <span className="volunteer-name">{assignment.deliveredAt ? '✅' : '✓'} {assignment.volunteer}</span>
                             {assignment.phone && <span className="volunteer-phone">📞 {assignment.phone}</span>}
+                            {assignment.deliveredAt && <span className="delivered-badge">DELIVERED</span>}
                           </div>
                           <button
                             className="remove-btn"
@@ -405,7 +442,7 @@ export default function Home() {
           <div className="modal" onClick={e => e.stopPropagation()}>
             <h2>Sign Up for Delivery</h2>
             <p className="modal-subtitle">Thank you for volunteering! 💛</p>
-            
+
             <div className="modal-info">
               <div className="modal-info-row">
                 <span className="modal-info-label">Date</span>
@@ -436,7 +473,7 @@ export default function Home() {
                 </div>
               )}
             </div>
-            
+
             <input
               type="text"
               placeholder="Enter your name"
@@ -460,6 +497,77 @@ export default function Home() {
               <button className="btn-primary" onClick={handleSignup}>
                 Sign Up
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDetailsModal && selectedAssignment && (
+        <div className="modal-overlay" onClick={() => setShowDetailsModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Delivery Details</h2>
+            <p className="modal-subtitle">
+              {selectedAssignment.deliveredAt ? 'This delivery is complete! ✅' : 'Ready to deliver? 🚗'}
+            </p>
+
+            <div className="modal-info">
+              <div className="modal-info-row">
+                <span className="modal-info-label">Date</span>
+                <span className="modal-info-value">
+                  {dayNames[selectedDate.getDay()]}, {formatDate(selectedDate)}
+                </span>
+              </div>
+              <div className="modal-info-row">
+                <span className="modal-info-label">Family</span>
+                <span className="modal-info-value">#{selectedFamily.id}</span>
+              </div>
+              <div className="modal-info-row">
+                <span className="modal-info-label">Address</span>
+                <span className="modal-info-value">{selectedFamily.address}</span>
+              </div>
+              <div className="modal-info-row">
+                <span className="modal-info-label">Bags</span>
+                <span className="modal-info-value">{selectedFamily.bags}</span>
+              </div>
+              <div className="modal-info-row">
+                <span className="modal-info-label">Instructions</span>
+                <span className="modal-info-value">{selectedFamily.instructions}</span>
+              </div>
+              {selectedFamily.contact && (
+                <div className="modal-info-row">
+                  <span className="modal-info-label">Family Contact</span>
+                  <span className="modal-info-value">{selectedFamily.contact}</span>
+                </div>
+              )}
+              <div className="modal-info-row">
+                <span className="modal-info-label">Volunteer</span>
+                <span className="modal-info-value">{selectedAssignment.volunteer}</span>
+              </div>
+              {selectedAssignment.phone && (
+                <div className="modal-info-row">
+                  <span className="modal-info-label">Volunteer Phone</span>
+                  <span className="modal-info-value">{selectedAssignment.phone}</span>
+                </div>
+              )}
+              {selectedAssignment.deliveredAt && (
+                <div className="modal-info-row">
+                  <span className="modal-info-label">Delivered At</span>
+                  <span className="modal-info-value">
+                    {new Date(selectedAssignment.deliveredAt).toLocaleString()}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <div className="modal-buttons">
+              <button className="btn-secondary" onClick={() => setShowDetailsModal(false)}>
+                Close
+              </button>
+              {!selectedAssignment.deliveredAt && (
+                <button className="btn-primary btn-delivered" onClick={handleMarkDelivered}>
+                  ✓ Mark as Delivered
+                </button>
+              )}
             </div>
           </div>
         </div>
