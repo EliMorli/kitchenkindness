@@ -1314,3 +1314,233 @@ body {
   border-radius: 12px;
 }
 
+/* ==================== */
+/* Today View Styles    */
+/* ==================== */
+
+/* View Toggle */
+.view-toggle {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px 24px;
+  background: white;
+  border-bottom: 1px solid #f0e6dd;
+}
+
+.toggle-btn {
+  padding: 12px 24px;
+  border: 2px solid #e8e0d8;
+  border-radius: 10px;
+  background: white;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #8b7355;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+
+.toggle-btn:hover {
+  border-color: #d35400;
+}
+
+.toggle-btn.active {
+  background: linear-gradient(135deg, #d35400 0%, #e67e22 100%);
+  border-color: #d35400;
+  color: white;
+}
+
+/* Today Stats Bar */
+.today-stats-bar {
+  background: linear-gradient(135deg, #f8f0e8 0%, #fef5eb 100%);
+  padding: 20px 24px;
+  border-bottom: 1px solid #f0e6dd;
+}
+
+.today-date-display {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.today-day {
+  font-family: 'Fraunces', Georgia, serif;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #5c4a3a;
+}
+
+.today-badge-large {
+  background: #d35400;
+  color: white;
+  font-size: 0.75rem;
+  padding: 5px 12px;
+  border-radius: 20px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.today-stats {
+  display: flex;
+  justify-content: center;
+  gap: 32px;
+}
+
+.today-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.today-stat-value {
+  font-family: 'Fraunces', Georgia, serif;
+  font-size: 2rem;
+  font-weight: 700;
+  color: #5c4a3a;
+}
+
+.today-stat-value.open {
+  color: #4caf50;
+}
+
+.today-stat-value.delivered {
+  color: #2e7d32;
+}
+
+.today-stat-label {
+  font-size: 0.8rem;
+  color: #8b7355;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Day Navigation */
+.day-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  background: white;
+  padding: 16px 24px;
+  border-radius: 16px;
+  box-shadow: 0 2px 12px rgba(139, 115, 85, 0.08);
+}
+
+.day-nav button {
+  background: #fef5eb;
+  border: none;
+  padding: 12px 20px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 600;
+  color: #d35400;
+  transition: all 0.2s;
+  font-size: 0.95rem;
+  font-family: inherit;
+}
+
+.day-nav button:hover {
+  background: #d35400;
+  color: white;
+  transform: translateY(-1px);
+}
+
+.today-btn {
+  background: linear-gradient(135deg, #d35400 0%, #e67e22 100%) !important;
+  color: white !important;
+}
+
+.today-btn:hover {
+  box-shadow: 0 4px 16px rgba(211, 84, 0, 0.4) !important;
+}
+
+/* Today Slots */
+.today-slots {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.slot-large {
+  display: flex;
+  flex-direction: column;
+  padding: 20px 24px;
+  border-radius: 16px;
+}
+
+.slot-large .slot-main {
+  margin-bottom: 12px;
+}
+
+.slot-large .slot-family {
+  font-size: 1.1rem;
+  margin-bottom: 6px;
+}
+
+.slot-large .slot-address {
+  font-size: 0.95rem;
+  margin-bottom: 10px;
+}
+
+.slot-large .slot-meta {
+  gap: 16px;
+  font-size: 0.85rem;
+}
+
+.slot-large .slot-volunteer {
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.slot-large .volunteer-name {
+  font-size: 1rem;
+}
+
+.slot-large .volunteer-phone {
+  font-size: 0.85rem;
+}
+
+.slot-large .open-badge {
+  font-size: 0.85rem;
+  padding: 6px 16px;
+}
+
+/* Responsive Today View */
+@media (max-width: 768px) {
+  .today-day {
+    font-size: 1.2rem;
+  }
+
+  .today-stats {
+    gap: 20px;
+  }
+
+  .today-stat-value {
+    font-size: 1.5rem;
+  }
+
+  .day-nav {
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: center;
+  }
+
+  .day-nav button {
+    flex: 1;
+    min-width: 120px;
+    text-align: center;
+  }
+
+  .slot-large {
+    padding: 16px 20px;
+  }
+
+  .slot-large .slot-meta {
+    flex-direction: column;
+    gap: 8px;
+  }
+}
+
