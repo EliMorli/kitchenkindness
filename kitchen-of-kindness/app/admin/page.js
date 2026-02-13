@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../../lib/supabase';
 
 const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || 'admin2026';
@@ -79,9 +79,17 @@ export default function AdminPage() {
 
   const loadAssignments = async () => {
     try {
+      // Filter by relevant date range for better performance
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - 30); // 1 month ago (for stats)
+      const endDate = new Date();
+      endDate.setDate(endDate.getDate() + 90); // 3 months ahead
+
       const { data, error } = await supabase
         .from('delivery_assignments')
         .select('*')
+        .gte('delivery_date', startDate.toISOString().split('T')[0])
+        .lte('delivery_date', endDate.toISOString().split('T')[0])
         .order('delivery_date', { ascending: true });
 
       if (error) throw error;
@@ -337,10 +345,11 @@ export default function AdminPage() {
     };
   };
 
-  const stats = getStats();
+  // Memoize stats to prevent recalculation on every render
+  const stats = useMemo(() => getStats(), [families, assignments]);
 
-  // Filter assignments
-  const getFilteredAssignments = () => {
+  // Memoized filtered assignments
+  const filteredAssignments = useMemo(() => {
     let filtered = [...assignments];
 
     if (filterWeek === 'thisWeek') {
@@ -368,7 +377,7 @@ export default function AdminPage() {
     }
 
     return filtered.sort((a, b) => new Date(a.delivery_date) - new Date(b.delivery_date));
-  };
+  }, [assignments, filterWeek]);
 
   const formatDate = (dateStr) => {
     const date = new Date(dateStr);
@@ -523,7 +532,7 @@ export default function AdminPage() {
         {activeTab === 'assignments' && (
           <section className="admin-list-section">
             <div className="section-header">
-              <h2>All Assignments ({getFilteredAssignments().length})</h2>
+              <h2>All Assignments ({filteredAssignments.length})</h2>
               <div className="filter-buttons">
                 <button
                   className={`filter-btn ${filterWeek === 'all' ? 'active' : ''}`}
@@ -548,7 +557,7 @@ export default function AdminPage() {
 
             {loading ? (
               <p>Loading...</p>
-            ) : getFilteredAssignments().length === 0 ? (
+            ) : filteredAssignments.length === 0 ? (
               <p>No assignments found for this period.</p>
             ) : (
               <div className="assignments-table">
@@ -559,7 +568,7 @@ export default function AdminPage() {
                   <span>Phone</span>
                   <span>Status</span>
                 </div>
-                {getFilteredAssignments().map(assignment => {
+                {filteredAssignments.map(assignment => {
                   const family = families.find(f => f.family_id === assignment.family_id);
                   return (
                     <div key={assignment.id} className={`table-row ${assignment.delivered_at ? 'delivered' : ''}`}>

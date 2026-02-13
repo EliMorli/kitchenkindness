@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 
 // Fallback family data (used if Supabase table doesn't exist yet)
@@ -117,9 +117,17 @@ export default function Home() {
   const loadAssignments = async () => {
     setLoading(true);
     try {
+      // Only load assignments within relevant date range for better performance
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - 7); // 1 week ago
+      const endDate = new Date();
+      endDate.setDate(endDate.getDate() + 60); // 2 months ahead
+
       const { data, error } = await supabase
         .from('delivery_assignments')
-        .select('*');
+        .select('*')
+        .gte('delivery_date', startDate.toISOString().split('T')[0])
+        .lte('delivery_date', endDate.toISOString().split('T')[0]);
 
       if (error) throw error;
 
@@ -378,8 +386,9 @@ export default function Home() {
     );
   }
 
-  const stats = getStats();
-  const todayStats = getStatsForDate(currentDate);
+  // Memoize expensive computations to prevent recalculation on every render
+  const stats = useMemo(() => getStats(), [assignments, families]);
+  const todayStats = useMemo(() => getStatsForDate(currentDate), [currentDate, assignments, families]);
 
   return (
     <>
