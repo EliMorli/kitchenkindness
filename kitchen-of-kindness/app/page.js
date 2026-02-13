@@ -21,7 +21,7 @@ const generateDeliveryDates = () => {
   const dates = [];
   const start = new Date(2026, 0, 25);
   const end = new Date(2026, 2, 25);
-  
+
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
     const day = d.getDay();
     if (day >= 0 && day <= 4) {
@@ -36,6 +36,20 @@ const deliveryDates = generateDeliveryDates();
 // Site password - change this to your desired password
 const SITE_PASSWORD = process.env.NEXT_PUBLIC_SITE_PASSWORD || 'kindness2026';
 
+// Get today or nearest delivery day
+const getInitialDate = () => {
+  const today = new Date();
+  // Check if today is a delivery day (Sun-Thu)
+  if (today.getDay() >= 0 && today.getDay() <= 4) {
+    return today;
+  }
+  // If Friday or Saturday, show next Sunday
+  const daysUntilSunday = 7 - today.getDay();
+  const nextSunday = new Date(today);
+  nextSunday.setDate(today.getDate() + daysUntilSunday);
+  return nextSunday;
+};
+
 export default function Home() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [passwordInput, setPasswordInput] = useState('');
@@ -43,6 +57,8 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [families, setFamilies] = useState(fallbackFamilies);
   const [assignments, setAssignments] = useState({});
+  const [viewMode, setViewMode] = useState('today'); // 'today' or 'week'
+  const [currentDate, setCurrentDate] = useState(getInitialDate());
   const [currentWeekStart, setCurrentWeekStart] = useState(new Date(2026, 0, 25));
   const [showSignupModal, setShowSignupModal] = useState(false);
   const [selectedDate, setSelectedDate] = useState(null);
@@ -104,9 +120,9 @@ export default function Home() {
       const { data, error } = await supabase
         .from('delivery_assignments')
         .select('*');
-      
+
       if (error) throw error;
-      
+
       const assignmentMap = {};
       data?.forEach(item => {
         assignmentMap[item.slot_key] = {
@@ -215,15 +231,15 @@ export default function Home() {
 
   const handleRemoveSignup = async (date, familyId) => {
     const key = getAssignmentKey(date, familyId);
-    
+
     try {
       const { error } = await supabase
         .from('delivery_assignments')
         .delete()
         .eq('slot_key', key);
-      
+
       if (error) throw error;
-      
+
       setAssignments(prev => {
         const newAssignments = { ...prev };
         delete newAssignments[key];
@@ -257,8 +273,30 @@ export default function Home() {
     }
   };
 
+  // Navigate single day
+  const navigateDay = (direction) => {
+    let newDate = new Date(currentDate);
+    do {
+      newDate.setDate(newDate.getDate() + direction);
+    } while (newDate.getDay() === 5 || newDate.getDay() === 6); // Skip Fri/Sat
+
+    // Keep within delivery date range
+    if (newDate >= new Date(2026, 0, 25) && newDate <= new Date(2026, 2, 25)) {
+      setCurrentDate(newDate);
+    }
+  };
+
+  const goToToday = () => {
+    setCurrentDate(getInitialDate());
+    setViewMode('today');
+  };
+
   const formatDate = (date) => {
     return `${monthNames[date.getMonth()]} ${date.getDate()}`;
+  };
+
+  const formatFullDate = (date) => {
+    return `${dayNames[date.getDay()]}, ${monthNames[date.getMonth()]} ${date.getDate()}, 2026`;
   };
 
   const isToday = (date) => {
@@ -269,6 +307,29 @@ export default function Home() {
   const getFamiliesForDate = (date) => {
     const dayName = dayNames[date.getDay()];
     return families.filter(f => !f.delivery_days || f.delivery_days.includes(dayName));
+  };
+
+  // Stats for a specific date
+  const getStatsForDate = (date) => {
+    const familiesForDate = getFamiliesForDate(date);
+    const dateStr = date.toISOString().split('T')[0];
+    let filled = 0;
+    let delivered = 0;
+
+    familiesForDate.forEach(family => {
+      const key = `${dateStr}-${family.id}`;
+      if (assignments[key]) {
+        filled++;
+        if (assignments[key].deliveredAt) delivered++;
+      }
+    });
+
+    return {
+      total: familiesForDate.length,
+      filled,
+      delivered,
+      open: familiesForDate.length - filled
+    };
   };
 
   const getStats = () => {
@@ -318,6 +379,7 @@ export default function Home() {
   }
 
   const stats = getStats();
+  const todayStats = getStatsForDate(currentDate);
 
   return (
     <>
@@ -326,116 +388,229 @@ export default function Home() {
         <p>Volunteer Delivery Sign-Up</p>
       </header>
 
-      <div className="stats-bar">
-        <div className="stat">
-          <div className="stat-value">{stats.filledSlots}</div>
-          <div className="stat-label">Slots Filled</div>
-        </div>
-        <div className="stat">
-          <div className="stat-value">{stats.totalSlots - stats.filledSlots}</div>
-          <div className="stat-label">Slots Open</div>
-        </div>
-        <div className="stat">
-          <div className="stat-value">{Object.keys(stats.volunteerCounts).length}</div>
-          <div className="stat-label">Volunteers</div>
-        </div>
-        <div className="stat">
-          <div className="stat-value">{families.length}</div>
-          <div className="stat-label">Families</div>
-        </div>
+      {/* View Toggle */}
+      <div className="view-toggle">
+        <button
+          className={`toggle-btn ${viewMode === 'today' ? 'active' : ''}`}
+          onClick={() => setViewMode('today')}
+        >
+          Today
+        </button>
+        <button
+          className={`toggle-btn ${viewMode === 'week' ? 'active' : ''}`}
+          onClick={() => setViewMode('week')}
+        >
+          Week View
+        </button>
       </div>
 
-      <div className="main-content">
-        <div className="week-nav">
-          <button 
-            onClick={() => navigateWeek(-1)}
-            disabled={currentWeekStart <= new Date(2026, 0, 25)}
-          >
-            ← Previous Week
-          </button>
-          <span className="week-title">
-            Week of {formatDate(currentWeekStart)}, 2026
-          </span>
-          <button 
-            onClick={() => navigateWeek(1)}
-            disabled={currentWeekStart >= new Date(2026, 2, 22)}
-          >
-            Next Week →
-          </button>
-        </div>
-
-        <div className="calendar-grid">
-          {getWeekDates().map(date => (
-            <div className="day-column" key={date.toISOString()}>
-              <div className="day-header">
-                <span className="day-name">
-                  {dayNames[date.getDay()]}
-                  {isToday(date) && <span className="today-badge">TODAY</span>}
-                </span>
-                <div className="day-date">{formatDate(date)}, 2026</div>
+      {/* Today View */}
+      {viewMode === 'today' && (
+        <>
+          {/* Today Stats */}
+          <div className="today-stats-bar">
+            <div className="today-date-display">
+              <span className="today-day">{formatFullDate(currentDate)}</span>
+              {isToday(currentDate) && <span className="today-badge-large">TODAY</span>}
+            </div>
+            <div className="today-stats">
+              <div className="today-stat">
+                <span className="today-stat-value">{todayStats.filled}</span>
+                <span className="today-stat-label">Filled</span>
               </div>
-              <div className="slots-container">
-                {getFamiliesForDate(date).map(family => {
-                  const key = getAssignmentKey(date, family.id);
-                  const assignment = assignments[key];
+              <div className="today-stat">
+                <span className="today-stat-value open">{todayStats.open}</span>
+                <span className="today-stat-label">Open</span>
+              </div>
+              <div className="today-stat">
+                <span className="today-stat-value delivered">{todayStats.delivered}</span>
+                <span className="today-stat-label">Delivered</span>
+              </div>
+            </div>
+          </div>
 
-                  return (
-                    <div
-                      key={family.id}
-                      className={`slot ${assignment ? (assignment.deliveredAt ? 'slot-delivered' : 'slot-taken') : 'slot-open'}`}
-                      onClick={() => assignment ? handleTakenSlotClick(date, family, assignment) : handleSlotClick(date, family)}
-                    >
+          <div className="main-content">
+            {/* Day Navigation */}
+            <div className="day-nav">
+              <button onClick={() => navigateDay(-1)}>
+                ← Previous Day
+              </button>
+              {!isToday(currentDate) && (
+                <button className="today-btn" onClick={goToToday}>
+                  Go to Today
+                </button>
+              )}
+              <button onClick={() => navigateDay(1)}>
+                Next Day →
+              </button>
+            </div>
+
+            {/* Single Day Slots */}
+            <div className="today-slots">
+              {getFamiliesForDate(currentDate).map(family => {
+                const key = getAssignmentKey(currentDate, family.id);
+                const assignment = assignments[key];
+
+                return (
+                  <div
+                    key={family.id}
+                    className={`slot slot-large ${assignment ? (assignment.deliveredAt ? 'slot-delivered' : 'slot-taken') : 'slot-open'}`}
+                    onClick={() => assignment ? handleTakenSlotClick(currentDate, family, assignment) : handleSlotClick(currentDate, family)}
+                  >
+                    <div className="slot-main">
                       <div className="slot-family">Family #{family.id}</div>
                       <div className="slot-address">{family.address}</div>
                       <div className="slot-meta">
                         <span>📦 {family.bags} bag{family.bags > 1 ? 's' : ''}</span>
                         <span>📋 {family.instructions}</span>
+                        {family.contact && <span>📞 {family.contact}</span>}
                       </div>
-                      {assignment ? (
-                        <div className="slot-volunteer">
-                          <div className="volunteer-info">
-                            <span className="volunteer-name">{assignment.deliveredAt ? '✅' : '✓'} {assignment.volunteer}</span>
-                            {assignment.phone && <span className="volunteer-phone">📞 {assignment.phone}</span>}
-                            {assignment.deliveredAt && <span className="delivered-badge">DELIVERED</span>}
-                          </div>
-                          <button
-                            className="remove-btn"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleRemoveSignup(date, family.id);
-                            }}
-                          >
-                            Remove
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="slot-volunteer">
-                          <span className="open-badge">OPEN - Click to sign up</span>
-                        </div>
-                      )}
                     </div>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {Object.keys(stats.volunteerCounts).length > 0 && (
-          <div className="leaderboard">
-            <h3>🙌 Our Amazing Volunteers</h3>
-            <div className="volunteer-list">
-              {Object.entries(stats.volunteerCounts)
-                .sort((a, b) => b[1] - a[1])
-                .map(([name, count]) => (
-                  <div className="volunteer-chip" key={name}>
-                    {name}: <strong>{count} delivery{count > 1 ? 'ies' : ''}</strong>
+                    {assignment ? (
+                      <div className="slot-volunteer">
+                        <div className="volunteer-info">
+                          <span className="volunteer-name">{assignment.deliveredAt ? '✅' : '✓'} {assignment.volunteer}</span>
+                          {assignment.phone && <span className="volunteer-phone">📞 {assignment.phone}</span>}
+                          {assignment.deliveredAt && <span className="delivered-badge">DELIVERED</span>}
+                        </div>
+                        <button
+                          className="remove-btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRemoveSignup(currentDate, family.id);
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="slot-volunteer">
+                        <span className="open-badge">OPEN - Click to sign up</span>
+                      </div>
+                    )}
                   </div>
-                ))}
+                );
+              })}
             </div>
           </div>
-        )}
-      </div>
+        </>
+      )}
+
+      {/* Week View */}
+      {viewMode === 'week' && (
+        <>
+          <div className="stats-bar">
+            <div className="stat">
+              <div className="stat-value">{stats.filledSlots}</div>
+              <div className="stat-label">Slots Filled</div>
+            </div>
+            <div className="stat">
+              <div className="stat-value">{stats.totalSlots - stats.filledSlots}</div>
+              <div className="stat-label">Slots Open</div>
+            </div>
+            <div className="stat">
+              <div className="stat-value">{Object.keys(stats.volunteerCounts).length}</div>
+              <div className="stat-label">Volunteers</div>
+            </div>
+            <div className="stat">
+              <div className="stat-value">{families.length}</div>
+              <div className="stat-label">Families</div>
+            </div>
+          </div>
+
+          <div className="main-content">
+            <div className="week-nav">
+              <button
+                onClick={() => navigateWeek(-1)}
+                disabled={currentWeekStart <= new Date(2026, 0, 25)}
+              >
+                ← Previous Week
+              </button>
+              <span className="week-title">
+                Week of {formatDate(currentWeekStart)}, 2026
+              </span>
+              <button
+                onClick={() => navigateWeek(1)}
+                disabled={currentWeekStart >= new Date(2026, 2, 22)}
+              >
+                Next Week →
+              </button>
+            </div>
+
+            <div className="calendar-grid">
+              {getWeekDates().map(date => (
+                <div className="day-column" key={date.toISOString()}>
+                  <div className="day-header">
+                    <span className="day-name">
+                      {dayNames[date.getDay()]}
+                      {isToday(date) && <span className="today-badge">TODAY</span>}
+                    </span>
+                    <div className="day-date">{formatDate(date)}, 2026</div>
+                  </div>
+                  <div className="slots-container">
+                    {getFamiliesForDate(date).map(family => {
+                      const key = getAssignmentKey(date, family.id);
+                      const assignment = assignments[key];
+
+                      return (
+                        <div
+                          key={family.id}
+                          className={`slot ${assignment ? (assignment.deliveredAt ? 'slot-delivered' : 'slot-taken') : 'slot-open'}`}
+                          onClick={() => assignment ? handleTakenSlotClick(date, family, assignment) : handleSlotClick(date, family)}
+                        >
+                          <div className="slot-family">Family #{family.id}</div>
+                          <div className="slot-address">{family.address}</div>
+                          <div className="slot-meta">
+                            <span>📦 {family.bags} bag{family.bags > 1 ? 's' : ''}</span>
+                            <span>📋 {family.instructions}</span>
+                          </div>
+                          {assignment ? (
+                            <div className="slot-volunteer">
+                              <div className="volunteer-info">
+                                <span className="volunteer-name">{assignment.deliveredAt ? '✅' : '✓'} {assignment.volunteer}</span>
+                                {assignment.phone && <span className="volunteer-phone">📞 {assignment.phone}</span>}
+                                {assignment.deliveredAt && <span className="delivered-badge">DELIVERED</span>}
+                              </div>
+                              <button
+                                className="remove-btn"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleRemoveSignup(date, family.id);
+                                }}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="slot-volunteer">
+                              <span className="open-badge">OPEN - Click to sign up</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {Object.keys(stats.volunteerCounts).length > 0 && (
+              <div className="leaderboard">
+                <h3>🙌 Our Amazing Volunteers</h3>
+                <div className="volunteer-list">
+                  {Object.entries(stats.volunteerCounts)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([name, count]) => (
+                      <div className="volunteer-chip" key={name}>
+                        {name}: <strong>{count} delivery{count > 1 ? 'ies' : ''}</strong>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      )}
 
       {showSignupModal && (
         <div className="modal-overlay" onClick={() => setShowSignupModal(false)}>
