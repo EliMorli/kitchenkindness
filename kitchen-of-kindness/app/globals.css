@@ -949,6 +949,7 @@ body {
 
   .assignments-table {
     font-size: 0.8rem;
+    overflow-x: auto;
   }
 
   .table-header,
@@ -957,9 +958,21 @@ body {
     gap: 8px;
   }
 
+  .table-header-6,
+  .table-row-6,
+  .table-header-history,
+  .table-row-history {
+    grid-template-columns: 100px 1fr 1fr 90px;
+    min-width: 500px;
+  }
+
   .cell-phone,
   .table-header span:nth-child(4) {
     display: none;
+  }
+
+  .history-controls {
+    flex-direction: column;
   }
 }
 
@@ -1272,6 +1285,59 @@ body {
 
 .status-pending {
   color: #f57c00;
+}
+
+.status-cancelled {
+  color: #c62828;
+}
+
+/* 6-column table layout for enhanced assignments */
+.table-header-6,
+.table-row-6 {
+  grid-template-columns: 130px 1.5fr 1fr 110px 110px 100px;
+}
+
+/* 7-column table layout for history */
+.table-header-history,
+.table-row-history {
+  grid-template-columns: 120px 1.5fr 1fr 100px 110px 90px 130px;
+}
+
+.table-row.cancelled {
+  background: #fce4ec;
+  border-color: #ef9a9a;
+  opacity: 0.85;
+}
+
+/* History controls */
+.history-subtitle {
+  color: #8b7355;
+  font-size: 0.9rem;
+  margin-bottom: 16px;
+}
+
+.history-controls {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.history-search {
+  flex: 1;
+  min-width: 200px;
+  padding: 10px 16px;
+  border: 2px solid #e8e0d8;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  font-family: inherit;
+  transition: border-color 0.2s;
+}
+
+.history-search:focus {
+  outline: none;
+  border-color: #d35400;
 }
 
 /* Volunteers Grid */

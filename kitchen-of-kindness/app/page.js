@@ -114,7 +114,8 @@ export default function Home() {
     try {
       const { data, error } = await supabase
         .from('delivery_assignments')
-        .select('*');
+        .select('*')
+        .is('cancelled_at', null);
 
       if (error) throw error;
 
@@ -197,13 +198,15 @@ export default function Home() {
     try {
       const { error } = await supabase
         .from('delivery_assignments')
-        .insert({
+        .upsert({
           slot_key: key,
           delivery_date: selectedDate.toISOString().split('T')[0],
           family_id: selectedFamily.id,
           volunteer_name: volunteerName.trim(),
-          volunteer_phone: volunteerPhone.trim()
-        });
+          volunteer_phone: volunteerPhone.trim(),
+          cancelled_at: null,
+          delivered_at: null
+        }, { onConflict: 'slot_key' });
 
       if (error) throw error;
 
@@ -232,7 +235,7 @@ export default function Home() {
     try {
       const { error } = await supabase
         .from('delivery_assignments')
-        .delete()
+        .update({ cancelled_at: new Date().toISOString() })
         .eq('slot_key', key);
 
       if (error) throw error;

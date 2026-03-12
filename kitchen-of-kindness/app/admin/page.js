@@ -35,6 +35,9 @@ export default function AdminPage() {
   const [editingId, setEditingId] = useState(null);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [filterWeek, setFilterWeek] = useState('all');
+  const [historySearch, setHistorySearch] = useState('');
+  const [historyFilter, setHistoryFilter] = useState('all');
+  const [allRecords, setAllRecords] = useState([]);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -81,13 +84,25 @@ export default function AdminPage() {
   const loadAssignments = async () => {
     if (!supabase) { setLoading(false); return; }
     try {
+      // Load active assignments (not cancelled)
       const { data, error } = await supabase
         .from('delivery_assignments')
         .select('*')
+        .is('cancelled_at', null)
         .order('delivery_date', { ascending: true });
 
       if (error) throw error;
       setAssignments(data || []);
+
+      // Load ALL records including cancelled for history
+      const { data: allData, error: allError } = await supabase
+        .from('delivery_assignments')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!allError) {
+        setAllRecords(allData || []);
+      }
     } catch (error) {
       console.error('Error loading assignments:', error);
     }
@@ -380,6 +395,40 @@ export default function AdminPage() {
     return `${dayNames[date.getDay()].slice(0, 3)}, ${date.toLocaleDateString()}`;
   };
 
+  const formatDateTime = (dateStr) => {
+    if (!dateStr) return '-';
+    const date = new Date(dateStr);
+    return date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  };
+
+  // Filter history records
+  const getFilteredHistory = () => {
+    let filtered = [...allRecords];
+
+    if (historyFilter === 'delivered') {
+      filtered = filtered.filter(a => a.delivered_at && !a.cancelled_at);
+    } else if (historyFilter === 'cancelled') {
+      filtered = filtered.filter(a => a.cancelled_at);
+    } else if (historyFilter === 'active') {
+      filtered = filtered.filter(a => !a.delivered_at && !a.cancelled_at);
+    }
+
+    if (historySearch.trim()) {
+      const search = historySearch.toLowerCase();
+      filtered = filtered.filter(a => {
+        const family = families.find(f => f.family_id === a.family_id);
+        return (
+          (a.volunteer_name && a.volunteer_name.toLowerCase().includes(search)) ||
+          (a.volunteer_phone && a.volunteer_phone.includes(search)) ||
+          (family && family.address.toLowerCase().includes(search)) ||
+          String(a.family_id).includes(search)
+        );
+      });
+    }
+
+    return filtered;
+  };
+
   // Password Screen
   if (!isAuthenticated) {
     return (
@@ -432,6 +481,12 @@ export default function AdminPage() {
           onClick={() => setActiveTab('volunteers')}
         >
           Volunteers
+        </button>
+        <button
+          className={`tab-btn ${activeTab === 'history' ? 'active' : ''}`}
+          onClick={() => setActiveTab('history')}
+        >
+          History
         </button>
         <button
           className={`tab-btn ${activeTab === 'families' ? 'active' : ''}`}
@@ -557,26 +612,118 @@ export default function AdminPage() {
               <p>No assignments found for this period.</p>
             ) : (
               <div className="assignments-table">
-                <div className="table-header">
+                <div className="table-header table-header-6">
                   <span>Date</span>
-                  <span>Family</span>
+                  <span>Family / Address</span>
                   <span>Volunteer</span>
                   <span>Phone</span>
+                  <span>Signed Up</span>
                   <span>Status</span>
                 </div>
                 {getFilteredAssignments().map(assignment => {
                   const family = families.find(f => f.family_id === assignment.family_id);
                   return (
-                    <div key={assignment.id} className={`table-row ${assignment.delivered_at ? 'delivered' : ''}`}>
+                    <div key={assignment.id} className={`table-row table-row-6 ${assignment.delivered_at ? 'delivered' : ''}`}>
                       <span className="cell-date">{formatDate(assignment.delivery_date)}</span>
                       <span className="cell-family">
                         #{assignment.family_id}
-                        {family && <small>{family.address.split(',')[0]}</small>}
+                        {family && <small>{family.address}</small>}
                       </span>
                       <span className="cell-volunteer">{assignment.volunteer_name}</span>
                       <span className="cell-phone">{assignment.volunteer_phone || '-'}</span>
+                      <span className="cell-date">{formatDateTime(assignment.created_at)}</span>
                       <span className={`cell-status ${assignment.delivered_at ? 'status-delivered' : 'status-pending'}`}>
                         {assignment.delivered_at ? '✅ Delivered' : '🕐 Pending'}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* History Tab - Full Audit Trail */}
+        {activeTab === 'history' && (
+          <section className="admin-list-section">
+            <div className="section-header">
+              <h2>Delivery History ({getFilteredHistory().length})</h2>
+            </div>
+            <p className="history-subtitle">Complete record of all sign-ups, deliveries, and cancellations</p>
+
+            <div className="history-controls">
+              <input
+                type="text"
+                className="history-search"
+                placeholder="Search by name, phone, address, or family #..."
+                value={historySearch}
+                onChange={(e) => setHistorySearch(e.target.value)}
+              />
+              <div className="filter-buttons">
+                <button
+                  className={`filter-btn ${historyFilter === 'all' ? 'active' : ''}`}
+                  onClick={() => setHistoryFilter('all')}
+                >
+                  All
+                </button>
+                <button
+                  className={`filter-btn ${historyFilter === 'active' ? 'active' : ''}`}
+                  onClick={() => setHistoryFilter('active')}
+                >
+                  Active
+                </button>
+                <button
+                  className={`filter-btn ${historyFilter === 'delivered' ? 'active' : ''}`}
+                  onClick={() => setHistoryFilter('delivered')}
+                >
+                  Delivered
+                </button>
+                <button
+                  className={`filter-btn ${historyFilter === 'cancelled' ? 'active' : ''}`}
+                  onClick={() => setHistoryFilter('cancelled')}
+                >
+                  Cancelled
+                </button>
+              </div>
+            </div>
+
+            {loading ? (
+              <p>Loading...</p>
+            ) : getFilteredHistory().length === 0 ? (
+              <p>No records found.</p>
+            ) : (
+              <div className="assignments-table">
+                <div className="table-header table-header-history">
+                  <span>Delivery Date</span>
+                  <span>Family / Address</span>
+                  <span>Volunteer</span>
+                  <span>Phone</span>
+                  <span>Signed Up</span>
+                  <span>Status</span>
+                  <span>Completed / Cancelled</span>
+                </div>
+                {getFilteredHistory().map(record => {
+                  const family = families.find(f => f.family_id === record.family_id);
+                  const isCancelled = !!record.cancelled_at;
+                  const isDelivered = !!record.delivered_at && !isCancelled;
+                  const statusClass = isCancelled ? 'status-cancelled' : isDelivered ? 'status-delivered' : 'status-pending';
+                  const statusText = isCancelled ? 'Cancelled' : isDelivered ? 'Delivered' : 'Pending';
+
+                  return (
+                    <div key={record.id} className={`table-row table-row-history ${isCancelled ? 'cancelled' : isDelivered ? 'delivered' : ''}`}>
+                      <span className="cell-date">{formatDate(record.delivery_date)}</span>
+                      <span className="cell-family">
+                        #{record.family_id}
+                        {family && <small>{family.address}</small>}
+                      </span>
+                      <span className="cell-volunteer">{record.volunteer_name}</span>
+                      <span className="cell-phone">{record.volunteer_phone || '-'}</span>
+                      <span className="cell-date">{formatDateTime(record.created_at)}</span>
+                      <span className={`cell-status ${statusClass}`}>
+                        {statusText}
+                      </span>
+                      <span className="cell-date">
+                        {isCancelled ? formatDateTime(record.cancelled_at) : isDelivered ? formatDateTime(record.delivered_at) : '-'}
                       </span>
                     </div>
                   );
