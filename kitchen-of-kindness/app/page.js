@@ -52,7 +52,12 @@ export default function Home() {
   const [assignments, setAssignments] = useState({});
   const [viewMode, setViewMode] = useState('today'); // 'today' or 'week'
   const [currentDate, setCurrentDate] = useState(getInitialDate());
-  const [currentWeekStart, setCurrentWeekStart] = useState(new Date(2026, 0, 25));
+  const [currentWeekStart, setCurrentWeekStart] = useState(() => {
+    const today = new Date();
+    const sunday = new Date(today);
+    sunday.setDate(today.getDate() - today.getDay());
+    return sunday;
+  });
   const [showSignupModal, setShowSignupModal] = useState(false);
   const [selectedDate, setSelectedDate] = useState(null);
   const [selectedFamily, setSelectedFamily] = useState(null);
