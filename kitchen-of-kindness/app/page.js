@@ -66,12 +66,16 @@ export default function Home() {
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [selectedAssignment, setSelectedAssignment] = useState(null);
 
-  // Check if already authenticated
+  // Check if already authenticated and load saved volunteer info
   useEffect(() => {
     const auth = localStorage.getItem('kok_authenticated');
     if (auth === 'true') {
       setIsAuthenticated(true);
     }
+    const savedName = localStorage.getItem('kok_volunteer_name');
+    const savedPhone = localStorage.getItem('kok_volunteer_phone');
+    if (savedName) setVolunteerName(savedName);
+    if (savedPhone) setVolunteerPhone(savedPhone);
     setLoading(false);
   }, []);
 
@@ -224,9 +228,11 @@ export default function Home() {
         }
       }));
 
+      // Remember volunteer info for next time
+      localStorage.setItem('kok_volunteer_name', volunteerName.trim());
+      localStorage.setItem('kok_volunteer_phone', volunteerPhone.trim());
+
       setShowSignupModal(false);
-      setVolunteerName('');
-      setVolunteerPhone('');
     } catch (error) {
       console.error('Error signing up:', error);
       alert('Error signing up. Please try again.');
@@ -307,6 +313,12 @@ export default function Home() {
   const isToday = (date) => {
     const today = new Date();
     return date.toDateString() === today.toDateString();
+  };
+
+  const isOwnSignup = (assignment) => {
+    const savedName = localStorage.getItem('kok_volunteer_name');
+    if (!savedName || !assignment) return false;
+    return assignment.volunteer.trim().toLowerCase() === savedName.trim().toLowerCase();
   };
 
   const getFamiliesForDate = (date) => {
@@ -478,15 +490,17 @@ export default function Home() {
                           {assignment.phone && <span className="volunteer-phone">📞 {assignment.phone}</span>}
                           {assignment.deliveredAt && <span className="delivered-badge">DELIVERED</span>}
                         </div>
-                        <button
-                          className="remove-btn"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleRemoveSignup(currentDate, family.id);
-                          }}
-                        >
-                          Remove
-                        </button>
+                        {isOwnSignup(assignment) && !assignment.deliveredAt && (
+                          <button
+                            className="remove-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRemoveSignup(currentDate, family.id);
+                            }}
+                          >
+                            Remove
+                          </button>
+                        )}
                       </div>
                     ) : (
                       <div className="slot-volunteer">
@@ -576,15 +590,17 @@ export default function Home() {
                                 {assignment.phone && <span className="volunteer-phone">📞 {assignment.phone}</span>}
                                 {assignment.deliveredAt && <span className="delivered-badge">DELIVERED</span>}
                               </div>
-                              <button
-                                className="remove-btn"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleRemoveSignup(date, family.id);
-                                }}
-                              >
-                                Remove
-                              </button>
+                              {isOwnSignup(assignment) && !assignment.deliveredAt && (
+                                <button
+                                  className="remove-btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleRemoveSignup(date, family.id);
+                                  }}
+                                >
+                                  Remove
+                                </button>
+                              )}
                             </div>
                           ) : (
                             <div className="slot-volunteer">
