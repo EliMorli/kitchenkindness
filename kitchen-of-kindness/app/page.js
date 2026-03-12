@@ -3,24 +3,17 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 
-// Fallback family data (used if Supabase table doesn't exist yet)
-const fallbackFamilies = [
-  { id: 350, address: "12619 Miranda St, North Hollywood, CA", instructions: "Leave at door", contact: "(818) 482-9559", bags: 3 },
-  { id: 351, address: "5247 Corteen Pl, Valley Village, CA 91607", instructions: "Call when arrive", contact: "(323) 528-7899", bags: 2 },
-  { id: 352, address: "5465 White Oak Ave Apt 212, Encino, CA 91316", instructions: "Leave at door", contact: "", bags: 1 },
-  { id: 353, address: "18342 Ventura Blvd, CA", instructions: "Leave at door", contact: "", bags: 1 },
-  { id: 354, address: "6413 Wystone Ave, Reseda, CA 91335", instructions: "Leave at door", contact: "", bags: 2 },
-  { id: 355, address: "12720 Burbank Blvd #127, Valley Village, CA 90035", instructions: "Leave at door", contact: "(718) 909-0378", bags: 3 },
-];
+// Families are loaded from Supabase - empty fallback if database is unavailable
+const fallbackFamilies = [];
 
 const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-// Generate dates from Jan 25 to Mar 25, 2026 (Sun-Thu only)
+// Generate dates from Jan 25 to Jun 30, 2026 (Sun-Thu only)
 const generateDeliveryDates = () => {
   const dates = [];
   const start = new Date(2026, 0, 25);
-  const end = new Date(2026, 2, 25);
+  const end = new Date(2026, 5, 30);
 
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
     const day = d.getDay();
@@ -33,8 +26,8 @@ const generateDeliveryDates = () => {
 
 const deliveryDates = generateDeliveryDates();
 
-// Site password - change this to your desired password
-const SITE_PASSWORD = process.env.NEXT_PUBLIC_SITE_PASSWORD || 'kindness2026';
+// Site password - set via NEXT_PUBLIC_SITE_PASSWORD environment variable
+const SITE_PASSWORD = process.env.NEXT_PUBLIC_SITE_PASSWORD;
 
 // Get today or nearest delivery day
 const getInitialDate = () => {
@@ -86,6 +79,7 @@ export default function Home() {
   }, [isAuthenticated]);
 
   const loadFamilies = async () => {
+    if (!supabase) return;
     try {
       const { data, error } = await supabase
         .from('families')
@@ -115,6 +109,7 @@ export default function Home() {
   };
 
   const loadAssignments = async () => {
+    if (!supabase) { setLoading(false); return; }
     setLoading(true);
     try {
       const { data, error } = await supabase
@@ -168,6 +163,7 @@ export default function Home() {
   };
 
   const handleMarkDelivered = async () => {
+    if (!supabase) return;
     const key = getAssignmentKey(selectedDate, selectedFamily.id);
 
     try {
@@ -194,7 +190,7 @@ export default function Home() {
   };
 
   const handleSignup = async () => {
-    if (!volunteerName.trim() || !volunteerPhone.trim()) return;
+    if (!volunteerName.trim() || !volunteerPhone.trim() || !supabase) return;
 
     const key = getAssignmentKey(selectedDate, selectedFamily.id);
 
@@ -230,6 +226,7 @@ export default function Home() {
   };
 
   const handleRemoveSignup = async (date, familyId) => {
+    if (!supabase) return;
     const key = getAssignmentKey(date, familyId);
 
     try {
@@ -268,7 +265,7 @@ export default function Home() {
   const navigateWeek = (direction) => {
     const newStart = new Date(currentWeekStart);
     newStart.setDate(currentWeekStart.getDate() + (direction * 7));
-    if (newStart >= new Date(2026, 0, 25) && newStart <= new Date(2026, 2, 25)) {
+    if (newStart >= new Date(2026, 0, 25) && newStart <= new Date(2026, 5, 30)) {
       setCurrentWeekStart(newStart);
     }
   };
@@ -281,7 +278,7 @@ export default function Home() {
     } while (newDate.getDay() === 5 || newDate.getDay() === 6); // Skip Fri/Sat
 
     // Keep within delivery date range
-    if (newDate >= new Date(2026, 0, 25) && newDate <= new Date(2026, 2, 25)) {
+    if (newDate >= new Date(2026, 0, 25) && newDate <= new Date(2026, 5, 30)) {
       setCurrentDate(newDate);
     }
   };
@@ -296,7 +293,7 @@ export default function Home() {
   };
 
   const formatFullDate = (date) => {
-    return `${dayNames[date.getDay()]}, ${monthNames[date.getMonth()]} ${date.getDate()}, 2026`;
+    return `${dayNames[date.getDay()]}, ${monthNames[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
   };
 
   const isToday = (date) => {
@@ -527,11 +524,11 @@ export default function Home() {
                 ← Previous Week
               </button>
               <span className="week-title">
-                Week of {formatDate(currentWeekStart)}, 2026
+                Week of {formatDate(currentWeekStart)}, {currentWeekStart.getFullYear()}
               </span>
               <button
                 onClick={() => navigateWeek(1)}
-                disabled={currentWeekStart >= new Date(2026, 2, 22)}
+                disabled={currentWeekStart >= new Date(2026, 5, 28)}
               >
                 Next Week →
               </button>
@@ -545,7 +542,7 @@ export default function Home() {
                       {dayNames[date.getDay()]}
                       {isToday(date) && <span className="today-badge">TODAY</span>}
                     </span>
-                    <div className="day-date">{formatDate(date)}, 2026</div>
+                    <div className="day-date">{formatDate(date)}, {date.getFullYear()}</div>
                   </div>
                   <div className="slots-container">
                     {getFamiliesForDate(date).map(family => {

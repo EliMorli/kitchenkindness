@@ -3,15 +3,15 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
 
-const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || 'admin2026';
+const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD;
 const ALL_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'];
 const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-// Generate dates from Jan 25 to Mar 25, 2026 (Sun-Thu only)
+// Generate dates from Jan 25 to Jun 30, 2026 (Sun-Thu only)
 const generateDeliveryDates = () => {
   const dates = [];
   const start = new Date(2026, 0, 25);
-  const end = new Date(2026, 2, 25);
+  const end = new Date(2026, 5, 30);
 
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
     const day = d.getDay();
@@ -64,6 +64,7 @@ export default function AdminPage() {
   }, [isAuthenticated]);
 
   const loadFamilies = async () => {
+    if (!supabase) return;
     try {
       const { data, error } = await supabase
         .from('families')
@@ -78,6 +79,7 @@ export default function AdminPage() {
   };
 
   const loadAssignments = async () => {
+    if (!supabase) { setLoading(false); return; }
     try {
       const { data, error } = await supabase
         .from('delivery_assignments')
@@ -147,6 +149,7 @@ export default function AdminPage() {
       return;
     }
 
+    if (!supabase) return;
     setSaving(true);
     try {
       if (editingId) {
@@ -209,6 +212,7 @@ export default function AdminPage() {
   };
 
   const handleDelete = async (family) => {
+    if (!supabase) return;
     if (!confirm(`Are you sure you want to delete Family #${family.family_id}?\n\n${family.address}`)) {
       return;
     }
@@ -228,6 +232,7 @@ export default function AdminPage() {
   };
 
   const handleToggleActive = async (family) => {
+    if (!supabase) return;
     try {
       const { error } = await supabase
         .from('families')
