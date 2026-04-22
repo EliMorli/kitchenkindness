@@ -1610,3 +1610,266 @@ body {
   }
 }
 
+/* ==========================================
+   KITCHEN VIEW - Projection-friendly table
+   ========================================== */
+
+.kitchen-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  font-size: 1.5rem;
+  color: #5c4a3a;
+}
+
+.kitchen-container {
+  min-height: 100vh;
+  background: #fefcfa;
+  padding: 0;
+}
+
+.kitchen-header {
+  background: linear-gradient(135deg, #d35400 0%, #e67e22 100%);
+  padding: 20px 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: white;
+}
+
+.kitchen-header h1 {
+  font-family: 'Fraunces', Georgia, serif;
+  font-size: 1.8rem;
+  font-weight: 700;
+  margin: 0;
+}
+
+.kitchen-summary {
+  display: flex;
+  gap: 24px;
+}
+
+.kitchen-summary-item {
+  font-size: 1.2rem;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.2);
+  padding: 6px 16px;
+  border-radius: 8px;
+}
+
+.kitchen-day-selector {
+  display: flex;
+  gap: 0;
+  padding: 0 32px;
+  background: #f8f0e8;
+  border-bottom: 2px solid #e8e0d8;
+}
+
+.kitchen-day-btn {
+  flex: 1;
+  padding: 14px 12px;
+  border: none;
+  background: transparent;
+  font-size: 1.1rem;
+  font-weight: 600;
+  font-family: inherit;
+  color: #8b7355;
+  cursor: pointer;
+  position: relative;
+  transition: all 0.2s;
+  border-bottom: 3px solid transparent;
+}
+
+.kitchen-day-btn:hover {
+  background: rgba(211, 84, 0, 0.08);
+  color: #5c4a3a;
+}
+
+.kitchen-day-btn.active {
+  color: #d35400;
+  border-bottom-color: #d35400;
+  background: white;
+}
+
+.kitchen-day-btn.today::after {
+  content: 'TODAY';
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  font-size: 0.55rem;
+  font-weight: 700;
+  color: white;
+  background: #d35400;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.kitchen-today-dot {
+  display: none;
+}
+
+.kitchen-table-wrapper {
+  padding: 24px 32px;
+  overflow-x: auto;
+}
+
+.kitchen-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 1.05rem;
+  border: 2px solid #d4c4b0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.kitchen-table thead {
+  background: #5c4a3a;
+  color: white;
+}
+
+.kitchen-table th {
+  padding: 14px 16px;
+  text-align: left;
+  font-weight: 700;
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-right: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.kitchen-table th:last-child {
+  border-right: none;
+}
+
+.kitchen-table td {
+  padding: 12px 16px;
+  border-right: 1px solid #e8e0d8;
+  border-bottom: 1px solid #e8e0d8;
+  vertical-align: top;
+}
+
+.kitchen-table td:last-child {
+  border-right: none;
+}
+
+.row-even {
+  background: white;
+}
+
+.row-odd {
+  background: #fef9f3;
+}
+
+.kitchen-table tbody tr:hover {
+  background: #fff3e0;
+}
+
+.kitchen-table .col-id {
+  width: 70px;
+  font-weight: 700;
+  color: #d35400;
+  text-align: center;
+}
+
+.kitchen-table .col-people {
+  width: 80px;
+  text-align: center;
+  font-weight: 600;
+}
+
+.kitchen-table .col-bags {
+  width: 70px;
+  text-align: center;
+  font-weight: 600;
+}
+
+.kitchen-table .col-address {
+  min-width: 200px;
+}
+
+.kitchen-table .col-notes {
+  min-width: 180px;
+  color: #6b5b4a;
+  font-size: 0.95rem;
+}
+
+.kitchen-table .col-saturday {
+  width: 90px;
+  text-align: center;
+  font-weight: 700;
+}
+
+.sat-yes {
+  color: #2e7d32;
+  background: rgba(76, 175, 80, 0.08);
+}
+
+.sat-no {
+  color: #bbb;
+}
+
+.kitchen-table tfoot {
+  background: #f8f0e8;
+  border-top: 2px solid #d4c4b0;
+}
+
+.kitchen-table tfoot td {
+  padding: 12px 16px;
+  font-size: 1rem;
+}
+
+.kitchen-empty {
+  text-align: center;
+  padding: 48px 16px !important;
+  color: #8b7355;
+  font-size: 1.2rem;
+  font-style: italic;
+}
+
+/* Kitchen responsive */
+@media (max-width: 768px) {
+  .kitchen-header {
+    flex-direction: column;
+    gap: 12px;
+    text-align: center;
+    padding: 16px;
+  }
+
+  .kitchen-header h1 {
+    font-size: 1.4rem;
+  }
+
+  .kitchen-summary {
+    gap: 12px;
+  }
+
+  .kitchen-summary-item {
+    font-size: 0.9rem;
+    padding: 4px 10px;
+  }
+
+  .kitchen-day-selector {
+    padding: 0 12px;
+  }
+
+  .kitchen-day-btn {
+    font-size: 0.85rem;
+    padding: 10px 6px;
+  }
+
+  .kitchen-table-wrapper {
+    padding: 12px;
+  }
+
+  .kitchen-table {
+    font-size: 0.85rem;
+  }
+
+  .kitchen-table th,
+  .kitchen-table td {
+    padding: 8px 10px;
+  }
+}
+
+

@@ -46,8 +46,10 @@ export default function AdminPage() {
     contact: '',
     bags: 1,
     extra_bags: 0,
+    people_count: 1,
     delivery_days: [...ALL_DAYS],
     notes: '',
+    saturday_meals: false,
     active: true
   });
 
@@ -150,8 +152,10 @@ export default function AdminPage() {
       contact: '',
       bags: 1,
       extra_bags: 0,
+      people_count: 1,
       delivery_days: [...ALL_DAYS],
       notes: '',
+      saturday_meals: false,
       active: true
     });
     setEditingId(null);
@@ -176,8 +180,10 @@ export default function AdminPage() {
             contact: formData.contact.trim(),
             bags: formData.bags,
             extra_bags: formData.extra_bags,
+            people_count: formData.people_count,
             delivery_days: formData.delivery_days,
             notes: formData.notes.trim(),
+            saturday_meals: formData.saturday_meals,
             active: formData.active
           })
           .eq('id', editingId);
@@ -193,8 +199,10 @@ export default function AdminPage() {
             contact: formData.contact.trim(),
             bags: formData.bags,
             extra_bags: formData.extra_bags,
+            people_count: formData.people_count,
             delivery_days: formData.delivery_days,
             notes: formData.notes.trim(),
+            saturday_meals: formData.saturday_meals,
             active: formData.active
           });
 
@@ -217,8 +225,10 @@ export default function AdminPage() {
       contact: family.contact || '',
       bags: family.bags || 1,
       extra_bags: family.extra_bags || 0,
+      people_count: family.people_count || 1,
       delivery_days: family.delivery_days || [...ALL_DAYS],
       notes: family.notes || '',
+      saturday_meals: family.saturday_meals || false,
       active: family.active !== false
     });
     setEditingId(family.id);
@@ -782,6 +792,17 @@ export default function AdminPage() {
 
                 <div className="form-row">
                   <div className="form-group">
+                    <label>People in Family</label>
+                    <input
+                      type="number"
+                      name="people_count"
+                      value={formData.people_count}
+                      onChange={handleInputChange}
+                      min="1"
+                      max="20"
+                    />
+                  </div>
+                  <div className="form-group">
                     <label>Bags</label>
                     <input
                       type="number"
@@ -861,6 +882,18 @@ export default function AdminPage() {
                   <label>
                     <input
                       type="checkbox"
+                      name="saturday_meals"
+                      checked={formData.saturday_meals}
+                      onChange={handleInputChange}
+                    />
+                    Saturday Meals (receives Saturday meal deliveries)
+                  </label>
+                </div>
+
+                <div className="form-group checkbox-group">
+                  <label>
+                    <input
+                      type="checkbox"
                       name="active"
                       checked={formData.active}
                       onChange={handleInputChange}
@@ -902,9 +935,11 @@ export default function AdminPage() {
                       </div>
                       <div className="family-address">{family.address}</div>
                       <div className="family-details">
+                        <span>👥 {family.people_count || '-'} people</span>
                         <span>📦 {family.bags} bag{family.bags !== 1 ? 's' : ''}</span>
                         {family.extra_bags > 0 && <span>+{family.extra_bags} extra</span>}
                         {family.contact && <span>📞 {family.contact}</span>}
+                        {family.saturday_meals && <span>🗓 Sat Meals</span>}
                       </div>
                       <div className="family-details">
                         <span>📋 {family.instructions}</span>
