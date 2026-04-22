@@ -47,7 +47,6 @@ export default function KitchenPage() {
   const todayStr = dayNames[new Date().getDay()];
   const filteredFamilies = getFamiliesForDay();
   const totalPeople = filteredFamilies.reduce((sum, f) => sum + (f.people_count || 0), 0);
-  const totalBags = filteredFamilies.reduce((sum, f) => sum + (f.bags || 1) + (f.extra_bags || 0), 0);
 
   if (loading) {
     return (
@@ -64,7 +63,6 @@ export default function KitchenPage() {
         <div className="kitchen-summary">
           <span className="kitchen-summary-item">{filteredFamilies.length} Families</span>
           <span className="kitchen-summary-item">{totalPeople} People</span>
-          <span className="kitchen-summary-item">{totalBags} Bags</span>
         </div>
       </header>
 
@@ -87,16 +85,15 @@ export default function KitchenPage() {
             <tr>
               <th className="col-id">#</th>
               <th className="col-people">People</th>
-              <th className="col-bags">Bags</th>
-              <th className="col-address">Address</th>
               <th className="col-notes">Notes / Instructions</th>
+              <th className="col-address">Address</th>
               <th className="col-saturday">Sat Meals</th>
             </tr>
           </thead>
           <tbody>
             {filteredFamilies.length === 0 ? (
               <tr>
-                <td colSpan="6" className="kitchen-empty">
+                <td colSpan="5" className="kitchen-empty">
                   No families scheduled for {selectedDay}
                 </td>
               </tr>
@@ -105,11 +102,10 @@ export default function KitchenPage() {
                 <tr key={family.id} className={idx % 2 === 0 ? 'row-even' : 'row-odd'}>
                   <td className="col-id">{family.family_id}</td>
                   <td className="col-people">{family.people_count || '-'}</td>
-                  <td className="col-bags">{(family.bags || 1) + (family.extra_bags || 0)}</td>
-                  <td className="col-address">{family.address}</td>
                   <td className="col-notes">
                     {[family.instructions, family.notes].filter(Boolean).join(' — ') || '-'}
                   </td>
+                  <td className="col-address">{family.address}</td>
                   <td className={`col-saturday ${family.saturday_meals ? 'sat-yes' : 'sat-no'}`}>
                     {family.saturday_meals ? 'YES' : '-'}
                   </td>
@@ -122,9 +118,8 @@ export default function KitchenPage() {
               <tr>
                 <td className="col-id"><strong>Total</strong></td>
                 <td className="col-people"><strong>{totalPeople}</strong></td>
-                <td className="col-bags"><strong>{totalBags}</strong></td>
-                <td className="col-address"></td>
                 <td className="col-notes"></td>
+                <td className="col-address"></td>
                 <td className="col-saturday">
                   <strong>{filteredFamilies.filter(f => f.saturday_meals).length}</strong>
                 </td>
