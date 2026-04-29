@@ -94,7 +94,7 @@ Edit the `families` array in `app/page.js`:
 
 ```javascript
 const families = [
-  { id: 350, address: "...", instructions: "...", contact: "...", bags: 3 },
+  { id: 350, address: "...", instructions: "...", contact: "...", people_count: 3 },
   // Add more families...
 ];
 ```

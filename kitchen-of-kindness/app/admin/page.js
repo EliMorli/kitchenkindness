@@ -44,8 +44,6 @@ export default function AdminPage() {
     address: '',
     instructions: 'Leave at door',
     contact: '',
-    bags: 1,
-    extra_bags: 0,
     people_count: 1,
     delivery_days: [...ALL_DAYS],
     notes: '',
@@ -150,8 +148,6 @@ export default function AdminPage() {
       address: '',
       instructions: 'Leave at door',
       contact: '',
-      bags: 1,
-      extra_bags: 0,
       people_count: 1,
       delivery_days: [...ALL_DAYS],
       notes: '',
@@ -178,8 +174,6 @@ export default function AdminPage() {
             address: formData.address.trim(),
             instructions: formData.instructions.trim(),
             contact: formData.contact.trim(),
-            bags: formData.bags,
-            extra_bags: formData.extra_bags,
             people_count: formData.people_count,
             delivery_days: formData.delivery_days,
             notes: formData.notes.trim(),
@@ -197,8 +191,6 @@ export default function AdminPage() {
             address: formData.address.trim(),
             instructions: formData.instructions.trim(),
             contact: formData.contact.trim(),
-            bags: formData.bags,
-            extra_bags: formData.extra_bags,
             people_count: formData.people_count,
             delivery_days: formData.delivery_days,
             notes: formData.notes.trim(),
@@ -223,8 +215,6 @@ export default function AdminPage() {
       address: family.address,
       instructions: family.instructions || 'Leave at door',
       contact: family.contact || '',
-      bags: family.bags || 1,
-      extra_bags: family.extra_bags || 0,
       people_count: family.people_count || 1,
       delivery_days: family.delivery_days || [...ALL_DAYS],
       notes: family.notes || '',
@@ -818,40 +808,16 @@ export default function AdminPage() {
                   />
                 </div>
 
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>People in Family</label>
-                    <input
-                      type="number"
-                      name="people_count"
-                      value={formData.people_count}
-                      onChange={handleInputChange}
-                      min="1"
-                      max="20"
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Bags</label>
-                    <input
-                      type="number"
-                      name="bags"
-                      value={formData.bags}
-                      onChange={handleInputChange}
-                      min="1"
-                      max="10"
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Extra Bags</label>
-                    <input
-                      type="number"
-                      name="extra_bags"
-                      value={formData.extra_bags}
-                      onChange={handleInputChange}
-                      min="0"
-                      max="10"
-                    />
-                  </div>
+                <div className="form-group">
+                  <label>People in Family</label>
+                  <input
+                    type="number"
+                    name="people_count"
+                    value={formData.people_count}
+                    onChange={handleInputChange}
+                    min="1"
+                    max="20"
+                  />
                 </div>
 
                 <div className="form-group">
@@ -964,8 +930,6 @@ export default function AdminPage() {
                       <div className="family-address">{family.address}</div>
                       <div className="family-details">
                         <span>👥 {family.people_count || '-'} people</span>
-                        <span>📦 {family.bags} bag{family.bags !== 1 ? 's' : ''}</span>
-                        {family.extra_bags > 0 && <span>+{family.extra_bags} extra</span>}
                         {family.contact && <span>📞 {family.contact}</span>}
                         {family.saturday_meals && <span>🗓 Sat Meals</span>}
                       </div>

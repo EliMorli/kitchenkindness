@@ -94,7 +94,6 @@ export default function Home() {
           address: f.address,
           instructions: f.instructions || 'Leave at door',
           contact: f.contact || '',
-          bags: (f.bags || 1) + (f.extra_bags || 0),
           delivery_days: f.delivery_days || ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday']
         }));
         setFamilies(formattedFamilies);
@@ -431,7 +430,6 @@ export default function Home() {
                       <div className="slot-family">Family #{family.id}</div>
                       <div className="slot-address">{family.address}</div>
                       <div className="slot-meta">
-                        <span>📦 {family.bags} bag{family.bags > 1 ? 's' : ''}</span>
                         <span>📋 {family.instructions}</span>
                         {family.contact && <span>📞 {family.contact}</span>}
                       </div>
@@ -533,7 +531,6 @@ export default function Home() {
                           <div className="slot-family">Family #{family.id}</div>
                           <div className="slot-address">{family.address}</div>
                           <div className="slot-meta">
-                            <span>📦 {family.bags} bag{family.bags > 1 ? 's' : ''}</span>
                             <span>📋 {family.instructions}</span>
                           </div>
                           {assignment ? (
@@ -608,10 +605,6 @@ export default function Home() {
                 <span className="modal-info-value">{selectedFamily.address}</span>
               </div>
               <div className="modal-info-row">
-                <span className="modal-info-label">Bags</span>
-                <span className="modal-info-value">{selectedFamily.bags}</span>
-              </div>
-              <div className="modal-info-row">
                 <span className="modal-info-label">Instructions</span>
                 <span className="modal-info-value">{selectedFamily.instructions}</span>
               </div>
@@ -673,10 +666,6 @@ export default function Home() {
               <div className="modal-info-row">
                 <span className="modal-info-label">Address</span>
                 <span className="modal-info-value">{selectedFamily.address}</span>
-              </div>
-              <div className="modal-info-row">
-                <span className="modal-info-label">Bags</span>
-                <span className="modal-info-value">{selectedFamily.bags}</span>
               </div>
               <div className="modal-info-row">
                 <span className="modal-info-label">Instructions</span>
