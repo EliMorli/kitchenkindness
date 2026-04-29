@@ -47,6 +47,7 @@ export default function KitchenPage() {
   const todayStr = dayNames[new Date().getDay()];
   const filteredFamilies = getFamiliesForDay();
   const totalPeople = filteredFamilies.reduce((sum, f) => sum + (f.people_count || 0), 0);
+  const showSaturdayCol = selectedDay === 'Thursday';
 
   if (loading) {
     return (
@@ -87,13 +88,13 @@ export default function KitchenPage() {
               <th className="col-people">People</th>
               <th className="col-notes">Notes / Instructions</th>
               <th className="col-address">Address</th>
-              <th className="col-saturday">Sat Meals</th>
+              {showSaturdayCol && <th className="col-saturday">Sat Meals</th>}
             </tr>
           </thead>
           <tbody>
             {filteredFamilies.length === 0 ? (
               <tr>
-                <td colSpan="5" className="kitchen-empty">
+                <td colSpan={showSaturdayCol ? 5 : 4} className="kitchen-empty">
                   No families scheduled for {selectedDay}
                 </td>
               </tr>
@@ -106,9 +107,11 @@ export default function KitchenPage() {
                     {[family.instructions, family.notes].filter(Boolean).join(' — ') || '-'}
                   </td>
                   <td className="col-address">{family.address}</td>
-                  <td className={`col-saturday ${family.saturday_meals ? 'sat-yes' : 'sat-no'}`}>
-                    {family.saturday_meals ? 'YES' : '-'}
-                  </td>
+                  {showSaturdayCol && (
+                    <td className={`col-saturday ${family.saturday_meals ? 'sat-yes' : 'sat-no'}`}>
+                      {family.saturday_meals ? 'YES' : '-'}
+                    </td>
+                  )}
                 </tr>
               ))
             )}
@@ -120,9 +123,11 @@ export default function KitchenPage() {
                 <td className="col-people"><strong>{totalPeople}</strong></td>
                 <td className="col-notes"></td>
                 <td className="col-address"></td>
-                <td className="col-saturday">
-                  <strong>{filteredFamilies.filter(f => f.saturday_meals).length}</strong>
-                </td>
+                {showSaturdayCol && (
+                  <td className="col-saturday">
+                    <strong>{filteredFamilies.filter(f => f.saturday_meals).length}</strong>
+                  </td>
+                )}
               </tr>
             </tfoot>
           )}
