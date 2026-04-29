@@ -39,9 +39,11 @@ export default function KitchenPage() {
   };
 
   const getFamiliesForDay = () => {
-    return families.filter(f =>
-      !f.delivery_days || f.delivery_days.includes(selectedDay)
-    );
+    return families.filter(f => {
+      const inDays = !f.delivery_days || f.delivery_days.includes(selectedDay);
+      const shabbatOnThursday = selectedDay === 'Thursday' && f.saturday_meals;
+      return inDays || shabbatOnThursday;
+    });
   };
 
   const todayStr = dayNames[new Date().getDay()];

@@ -1717,7 +1717,7 @@ body {
 .kitchen-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 1.05rem;
+  font-size: 1.45rem;
   border: 2px solid #94a3b8;
   border-radius: 8px;
   overflow: hidden;
@@ -1732,7 +1732,7 @@ body {
   padding: 14px 16px;
   text-align: left;
   font-weight: 700;
-  font-size: 0.95rem;
+  font-size: 1.2rem;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   border-right: 1px solid rgba(255, 255, 255, 0.15);
@@ -1786,7 +1786,7 @@ body {
 .kitchen-table .col-notes {
   min-width: 180px;
   color: #475569;
-  font-size: 0.95rem;
+  font-size: 1.3rem;
 }
 
 .kitchen-table .col-saturday {
@@ -1811,7 +1811,7 @@ body {
 
 .kitchen-table tfoot td {
   padding: 12px 16px;
-  font-size: 1rem;
+  font-size: 1.3rem;
 }
 
 .kitchen-empty {
