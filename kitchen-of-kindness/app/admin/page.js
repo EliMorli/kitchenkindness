@@ -256,6 +256,25 @@ export default function AdminPage() {
     }
   };
 
+  const handleCancelAssignment = async (assignment) => {
+    if (!supabase) return;
+    const family = families.find(f => f.family_id === assignment.family_id);
+    const familyLabel = family ? `${assignment.family_id} (${family.address})` : `#${assignment.family_id}`;
+    if (!confirm(`Cancel ${assignment.volunteer_name}'s sign-up for family ${familyLabel} on ${formatDate(assignment.delivery_date)}?`)) return;
+    try {
+      const { error } = await supabase
+        .from('delivery_assignments')
+        .update({ cancelled_at: new Date().toISOString() })
+        .eq('id', assignment.id);
+
+      if (error) throw error;
+      await loadAssignments();
+    } catch (error) {
+      console.error('Error cancelling assignment:', error);
+      alert('Error cancelling. Please try again.');
+    }
+  };
+
   const handleToggleActive = async (family) => {
     if (!supabase) return;
     try {
@@ -644,6 +663,15 @@ export default function AdminPage() {
                       <span className="cell-date">{formatDateTime(assignment.created_at)}</span>
                       <span className={`cell-status ${assignment.delivered_at ? 'status-delivered' : 'status-pending'}`}>
                         {assignment.delivered_at ? '✅ Delivered' : '🕐 Pending'}
+                        {!assignment.delivered_at && (
+                          <button
+                            className="admin-cancel-btn"
+                            onClick={() => handleCancelAssignment(assignment)}
+                            title="Cancel this sign-up"
+                          >
+                            ✕ Cancel
+                          </button>
+                        )}
                       </span>
                     </div>
                   );
