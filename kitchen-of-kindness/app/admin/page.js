@@ -44,8 +44,6 @@ export default function AdminPage() {
     address: '',
     instructions: 'Leave at door',
     contact: '',
-    bags: 1,
-    extra_bags: 0,
     people_count: 1,
     delivery_days: [...ALL_DAYS],
     notes: '',
@@ -150,8 +148,6 @@ export default function AdminPage() {
       address: '',
       instructions: 'Leave at door',
       contact: '',
-      bags: 1,
-      extra_bags: 0,
       people_count: 1,
       delivery_days: [...ALL_DAYS],
       notes: '',
@@ -178,8 +174,6 @@ export default function AdminPage() {
             address: formData.address.trim(),
             instructions: formData.instructions.trim(),
             contact: formData.contact.trim(),
-            bags: formData.bags,
-            extra_bags: formData.extra_bags,
             people_count: formData.people_count,
             delivery_days: formData.delivery_days,
             notes: formData.notes.trim(),
@@ -197,8 +191,6 @@ export default function AdminPage() {
             address: formData.address.trim(),
             instructions: formData.instructions.trim(),
             contact: formData.contact.trim(),
-            bags: formData.bags,
-            extra_bags: formData.extra_bags,
             people_count: formData.people_count,
             delivery_days: formData.delivery_days,
             notes: formData.notes.trim(),
@@ -223,8 +215,6 @@ export default function AdminPage() {
       address: family.address,
       instructions: family.instructions || 'Leave at door',
       contact: family.contact || '',
-      bags: family.bags || 1,
-      extra_bags: family.extra_bags || 0,
       people_count: family.people_count || 1,
       delivery_days: family.delivery_days || [...ALL_DAYS],
       notes: family.notes || '',
@@ -253,6 +243,25 @@ export default function AdminPage() {
     } catch (error) {
       console.error('Error deleting family:', error);
       alert('Error deleting family. Please try again.');
+    }
+  };
+
+  const handleCancelAssignment = async (assignment) => {
+    if (!supabase) return;
+    const family = families.find(f => f.family_id === assignment.family_id);
+    const familyLabel = family ? `${assignment.family_id} (${family.address})` : `#${assignment.family_id}`;
+    if (!confirm(`Cancel ${assignment.volunteer_name}'s sign-up for family ${familyLabel} on ${formatDate(assignment.delivery_date)}?`)) return;
+    try {
+      const { error } = await supabase
+        .from('delivery_assignments')
+        .update({ cancelled_at: new Date().toISOString() })
+        .eq('id', assignment.id);
+
+      if (error) throw error;
+      await loadAssignments();
+    } catch (error) {
+      console.error('Error cancelling assignment:', error);
+      alert('Error cancelling. Please try again.');
     }
   };
 
@@ -644,6 +653,15 @@ export default function AdminPage() {
                       <span className="cell-date">{formatDateTime(assignment.created_at)}</span>
                       <span className={`cell-status ${assignment.delivered_at ? 'status-delivered' : 'status-pending'}`}>
                         {assignment.delivered_at ? '✅ Delivered' : '🕐 Pending'}
+                        {!assignment.delivered_at && (
+                          <button
+                            className="admin-cancel-btn"
+                            onClick={() => handleCancelAssignment(assignment)}
+                            title="Cancel this sign-up"
+                          >
+                            ✕ Cancel
+                          </button>
+                        )}
                       </span>
                     </div>
                   );
@@ -790,40 +808,16 @@ export default function AdminPage() {
                   />
                 </div>
 
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>People in Family</label>
-                    <input
-                      type="number"
-                      name="people_count"
-                      value={formData.people_count}
-                      onChange={handleInputChange}
-                      min="1"
-                      max="20"
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Bags</label>
-                    <input
-                      type="number"
-                      name="bags"
-                      value={formData.bags}
-                      onChange={handleInputChange}
-                      min="1"
-                      max="10"
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Extra Bags</label>
-                    <input
-                      type="number"
-                      name="extra_bags"
-                      value={formData.extra_bags}
-                      onChange={handleInputChange}
-                      min="0"
-                      max="10"
-                    />
-                  </div>
+                <div className="form-group">
+                  <label>People in Family</label>
+                  <input
+                    type="number"
+                    name="people_count"
+                    value={formData.people_count}
+                    onChange={handleInputChange}
+                    min="1"
+                    max="20"
+                  />
                 </div>
 
                 <div className="form-group">
@@ -936,8 +930,6 @@ export default function AdminPage() {
                       <div className="family-address">{family.address}</div>
                       <div className="family-details">
                         <span>👥 {family.people_count || '-'} people</span>
-                        <span>📦 {family.bags} bag{family.bags !== 1 ? 's' : ''}</span>
-                        {family.extra_bags > 0 && <span>+{family.extra_bags} extra</span>}
                         {family.contact && <span>📞 {family.contact}</span>}
                         {family.saturday_meals && <span>🗓 Sat Meals</span>}
                       </div>

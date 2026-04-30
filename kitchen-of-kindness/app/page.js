@@ -26,9 +26,6 @@ const generateDeliveryDates = () => {
 
 const deliveryDates = generateDeliveryDates();
 
-// Site password - set via NEXT_PUBLIC_SITE_PASSWORD environment variable
-const SITE_PASSWORD = process.env.NEXT_PUBLIC_SITE_PASSWORD;
-
 // Get today or nearest delivery day
 const getInitialDate = () => {
   const today = new Date();
@@ -44,9 +41,6 @@ const getInitialDate = () => {
 };
 
 export default function Home() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [passwordInput, setPasswordInput] = useState('');
-  const [passwordError, setPasswordError] = useState('');
   const [loading, setLoading] = useState(true);
   const [families, setFamilies] = useState(fallbackFamilies);
   const [assignments, setAssignments] = useState({});
@@ -66,26 +60,19 @@ export default function Home() {
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [selectedAssignment, setSelectedAssignment] = useState(null);
 
-  // Check if already authenticated and load saved volunteer info
+  // Load saved volunteer info
   useEffect(() => {
-    const auth = localStorage.getItem('kok_authenticated');
-    if (auth === 'true') {
-      setIsAuthenticated(true);
-    }
     const savedName = localStorage.getItem('kok_volunteer_name');
     const savedPhone = localStorage.getItem('kok_volunteer_phone');
     if (savedName) setVolunteerName(savedName);
     if (savedPhone) setVolunteerPhone(savedPhone);
-    setLoading(false);
   }, []);
 
   // Load families and assignments from Supabase
   useEffect(() => {
-    if (isAuthenticated) {
-      loadFamilies();
-      loadAssignments();
-    }
-  }, [isAuthenticated]);
+    loadFamilies();
+    loadAssignments();
+  }, []);
 
   const loadFamilies = async () => {
     if (!supabase) return;
@@ -107,7 +94,6 @@ export default function Home() {
           address: f.address,
           instructions: f.instructions || 'Leave at door',
           contact: f.contact || '',
-          bags: (f.bags || 1) + (f.extra_bags || 0),
           delivery_days: f.delivery_days || ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday']
         }));
         setFamilies(formattedFamilies);
@@ -142,17 +128,6 @@ export default function Home() {
       console.error('Error loading assignments:', error);
     }
     setLoading(false);
-  };
-
-  const handlePasswordSubmit = (e) => {
-    e.preventDefault();
-    if (passwordInput === SITE_PASSWORD) {
-      setIsAuthenticated(true);
-      localStorage.setItem('kok_authenticated', 'true');
-      setPasswordError('');
-    } else {
-      setPasswordError('Incorrect password. Please try again.');
-    }
   };
 
   const getAssignmentKey = (date, familyId) => {
@@ -362,29 +337,6 @@ export default function Home() {
     return { totalSlots, filledSlots, volunteerCounts };
   };
 
-  // Password Screen
-  if (!isAuthenticated) {
-    return (
-      <div className="password-screen">
-        <div className="password-card">
-          <h1>🍲 Kitchen of Kindness</h1>
-          <p>Enter the volunteer password to continue</p>
-          <form onSubmit={handlePasswordSubmit}>
-            <input
-              type="password"
-              placeholder="Enter password"
-              value={passwordInput}
-              onChange={(e) => setPasswordInput(e.target.value)}
-              autoFocus
-            />
-            <button type="submit">Enter</button>
-          </form>
-          {passwordError && <p className="password-error">{passwordError}</p>}
-        </div>
-      </div>
-    );
-  }
-
   // Loading Screen
   if (loading) {
     return (
@@ -478,7 +430,6 @@ export default function Home() {
                       <div className="slot-family">Family #{family.id}</div>
                       <div className="slot-address">{family.address}</div>
                       <div className="slot-meta">
-                        <span>📦 {family.bags} bag{family.bags > 1 ? 's' : ''}</span>
                         <span>📋 {family.instructions}</span>
                         {family.contact && <span>📞 {family.contact}</span>}
                       </div>
@@ -580,7 +531,6 @@ export default function Home() {
                           <div className="slot-family">Family #{family.id}</div>
                           <div className="slot-address">{family.address}</div>
                           <div className="slot-meta">
-                            <span>📦 {family.bags} bag{family.bags > 1 ? 's' : ''}</span>
                             <span>📋 {family.instructions}</span>
                           </div>
                           {assignment ? (
@@ -655,10 +605,6 @@ export default function Home() {
                 <span className="modal-info-value">{selectedFamily.address}</span>
               </div>
               <div className="modal-info-row">
-                <span className="modal-info-label">Bags</span>
-                <span className="modal-info-value">{selectedFamily.bags}</span>
-              </div>
-              <div className="modal-info-row">
                 <span className="modal-info-label">Instructions</span>
                 <span className="modal-info-value">{selectedFamily.instructions}</span>
               </div>
@@ -720,10 +666,6 @@ export default function Home() {
               <div className="modal-info-row">
                 <span className="modal-info-label">Address</span>
                 <span className="modal-info-value">{selectedFamily.address}</span>
-              </div>
-              <div className="modal-info-row">
-                <span className="modal-info-label">Bags</span>
-                <span className="modal-info-value">{selectedFamily.bags}</span>
               </div>
               <div className="modal-info-row">
                 <span className="modal-info-label">Instructions</span>
