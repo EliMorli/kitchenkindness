@@ -24,6 +24,26 @@ const generateDeliveryDates = () => {
 
 const deliveryDates = generateDeliveryDates();
 
+const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const DELIVERY_RANGE_START = new Date(2026, 0, 25);
+const DELIVERY_RANGE_END = new Date(2026, 5, 30);
+
+const getInitialDeliveryDate = () => {
+  const today = new Date();
+  if (today.getDay() >= 0 && today.getDay() <= 4) return today;
+  const daysUntilSunday = 7 - today.getDay();
+  const next = new Date(today);
+  next.setDate(today.getDate() + daysUntilSunday);
+  return next;
+};
+
+const getInitialWeekStart = () => {
+  const today = new Date();
+  const sunday = new Date(today);
+  sunday.setDate(today.getDate() - today.getDay());
+  return sunday;
+};
+
 export default function AdminPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [passwordInput, setPasswordInput] = useState('');
@@ -38,6 +58,9 @@ export default function AdminPage() {
   const [historySearch, setHistorySearch] = useState('');
   const [historyFilter, setHistoryFilter] = useState('all');
   const [allRecords, setAllRecords] = useState([]);
+  const [signupsView, setSignupsView] = useState('today');
+  const [signupsDate, setSignupsDate] = useState(getInitialDeliveryDate);
+  const [signupsWeekStart, setSignupsWeekStart] = useState(getInitialWeekStart);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -250,7 +273,11 @@ export default function AdminPage() {
     if (!supabase) return;
     const family = families.find(f => f.family_id === assignment.family_id);
     const familyLabel = family ? `${assignment.family_id} (${family.address})` : `#${assignment.family_id}`;
-    if (!confirm(`Cancel ${assignment.volunteer_name}'s sign-up for family ${familyLabel} on ${formatDate(assignment.delivery_date)}?`)) return;
+    const dateLabel = formatDate(assignment.delivery_date);
+    const message = assignment.delivered_at
+      ? `${assignment.volunteer_name}'s delivery for family ${familyLabel} on ${dateLabel} is marked DELIVERED.\n\nClearing it will reopen the slot. The original delivery timestamp is kept in the audit trail. Continue?`
+      : `Cancel ${assignment.volunteer_name}'s sign-up for family ${familyLabel} on ${dateLabel}?`;
+    if (!confirm(message)) return;
     try {
       const { error } = await supabase
         .from('delivery_assignments')
@@ -420,6 +447,61 @@ export default function AdminPage() {
     return date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
+  // Sign-ups tab helpers (mirror of volunteer view)
+  const getSignupFamiliesForDate = (date) => {
+    const dayName = dayNames[date.getDay()];
+    return families
+      .filter(f => f.active !== false)
+      .filter(f => !f.delivery_days || f.delivery_days.includes(dayName));
+  };
+
+  const getSignupAssignmentForSlot = (date, familyId) => {
+    const slotKey = `${date.toISOString().split('T')[0]}-${familyId}`;
+    return assignments.find(a => a.slot_key === slotKey) || null;
+  };
+
+  const getSignupWeekDates = () => {
+    const dates = [];
+    const start = new Date(signupsWeekStart);
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+      if (d.getDay() >= 0 && d.getDay() <= 4) dates.push(d);
+    }
+    return dates;
+  };
+
+  const navigateSignupDay = (direction) => {
+    const newDate = new Date(signupsDate);
+    do {
+      newDate.setDate(newDate.getDate() + direction);
+    } while (newDate.getDay() === 5 || newDate.getDay() === 6);
+    if (newDate >= DELIVERY_RANGE_START && newDate <= DELIVERY_RANGE_END) {
+      setSignupsDate(newDate);
+    }
+  };
+
+  const navigateSignupWeek = (direction) => {
+    const newStart = new Date(signupsWeekStart);
+    newStart.setDate(signupsWeekStart.getDate() + direction * 7);
+    if (newStart >= DELIVERY_RANGE_START && newStart <= DELIVERY_RANGE_END) {
+      setSignupsWeekStart(newStart);
+    }
+  };
+
+  const goToTodaySignups = () => {
+    setSignupsDate(getInitialDeliveryDate());
+    setSignupsWeekStart(getInitialWeekStart());
+  };
+
+  const formatShortDate = (date) => `${monthNames[date.getMonth()]} ${date.getDate()}`;
+  const formatFullDate = (date) =>
+    `${dayNames[date.getDay()]}, ${monthNames[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
+  const isSameDay = (date) => {
+    const today = new Date();
+    return date.toDateString() === today.toDateString();
+  };
+
   // Filter history records
   const getFilteredHistory = () => {
     let filtered = [...allRecords];
@@ -488,6 +570,12 @@ export default function AdminPage() {
           onClick={() => setActiveTab('dashboard')}
         >
           Dashboard
+        </button>
+        <button
+          className={`tab-btn ${activeTab === 'signups' ? 'active' : ''}`}
+          onClick={() => setActiveTab('signups')}
+        >
+          Sign-ups
         </button>
         <button
           className={`tab-btn ${activeTab === 'assignments' ? 'active' : ''}`}
@@ -598,6 +686,203 @@ export default function AdminPage() {
           </>
         )}
 
+        {/* Sign-ups Tab — mirror of volunteer view with admin clear */}
+        {activeTab === 'signups' && (
+          <section className="admin-list-section">
+            <div className="section-header">
+              <h2>Volunteer Sign-ups</h2>
+            </div>
+            <p className="history-subtitle">
+              Same view volunteers see. Click any filled slot's <strong>Clear</strong> button to remove the assignment — works whether it's pending or already delivered.
+            </p>
+
+            <div className="view-toggle">
+              <button
+                className={`toggle-btn ${signupsView === 'today' ? 'active' : ''}`}
+                onClick={() => setSignupsView('today')}
+              >
+                Day
+              </button>
+              <button
+                className={`toggle-btn ${signupsView === 'week' ? 'active' : ''}`}
+                onClick={() => setSignupsView('week')}
+              >
+                Week View
+              </button>
+            </div>
+
+            {signupsView === 'today' && (
+              <>
+                <div className="today-stats-bar">
+                  <div className="today-date-display">
+                    <span className="today-day">{formatFullDate(signupsDate)}</span>
+                    {isSameDay(signupsDate) && <span className="today-badge-large">TODAY</span>}
+                  </div>
+                  {(() => {
+                    const familiesForDate = getSignupFamiliesForDate(signupsDate);
+                    let filled = 0;
+                    let delivered = 0;
+                    familiesForDate.forEach(f => {
+                      const a = getSignupAssignmentForSlot(signupsDate, f.family_id);
+                      if (a) {
+                        filled++;
+                        if (a.delivered_at) delivered++;
+                      }
+                    });
+                    const open = familiesForDate.length - filled;
+                    return (
+                      <div className="today-stats">
+                        <div className="today-stat">
+                          <span className="today-stat-value">{filled}</span>
+                          <span className="today-stat-label">Filled</span>
+                        </div>
+                        <div className="today-stat">
+                          <span className="today-stat-value open">{open}</span>
+                          <span className="today-stat-label">Open</span>
+                        </div>
+                        <div className="today-stat">
+                          <span className="today-stat-value delivered">{delivered}</span>
+                          <span className="today-stat-label">Delivered</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                <div className="day-nav">
+                  <button onClick={() => navigateSignupDay(-1)}>← Previous Day</button>
+                  {!isSameDay(signupsDate) && (
+                    <button className="today-btn" onClick={goToTodaySignups}>Go to Today</button>
+                  )}
+                  <button onClick={() => navigateSignupDay(1)}>Next Day →</button>
+                </div>
+
+                <div className="today-slots">
+                  {getSignupFamiliesForDate(signupsDate).map(family => {
+                    const assignment = getSignupAssignmentForSlot(signupsDate, family.family_id);
+                    const slotClass = assignment
+                      ? assignment.delivered_at ? 'slot-delivered' : 'slot-taken'
+                      : 'slot-open';
+                    return (
+                      <div key={family.id} className={`slot slot-large ${slotClass}`}>
+                        <div className="slot-main">
+                          <div className="slot-family">Family #{family.family_id}</div>
+                          <div className="slot-address">{family.address}</div>
+                          <div className="slot-meta">
+                            <span>📋 {family.instructions || 'Leave at door'}</span>
+                            {family.contact && <span>📞 {family.contact}</span>}
+                          </div>
+                        </div>
+                        {assignment ? (
+                          <div className="slot-volunteer">
+                            <div className="volunteer-info">
+                              <span className="volunteer-name">
+                                {assignment.delivered_at ? '✅' : '✓'} {assignment.volunteer_name}
+                              </span>
+                              {assignment.volunteer_phone && (
+                                <span className="volunteer-phone">📞 {assignment.volunteer_phone}</span>
+                              )}
+                              {assignment.delivered_at && <span className="delivered-badge">DELIVERED</span>}
+                            </div>
+                            <button
+                              className="admin-cancel-btn"
+                              onClick={() => handleCancelAssignment(assignment)}
+                              title={assignment.delivered_at ? 'Clear this delivery' : 'Cancel this sign-up'}
+                            >
+                              {assignment.delivered_at ? '✕ Clear' : '✕ Cancel'}
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="slot-volunteer">
+                            <span className="open-badge">OPEN</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            {signupsView === 'week' && (
+              <>
+                <div className="week-nav">
+                  <button
+                    onClick={() => navigateSignupWeek(-1)}
+                    disabled={signupsWeekStart <= DELIVERY_RANGE_START}
+                  >
+                    ← Previous Week
+                  </button>
+                  <span className="week-title">
+                    Week of {formatShortDate(signupsWeekStart)}, {signupsWeekStart.getFullYear()}
+                  </span>
+                  <button
+                    onClick={() => navigateSignupWeek(1)}
+                    disabled={signupsWeekStart >= new Date(2026, 5, 28)}
+                  >
+                    Next Week →
+                  </button>
+                </div>
+
+                <div className="calendar-grid">
+                  {getSignupWeekDates().map(date => (
+                    <div className="day-column" key={date.toISOString()}>
+                      <div className="day-header">
+                        <span className="day-name">
+                          {dayNames[date.getDay()]}
+                          {isSameDay(date) && <span className="today-badge">TODAY</span>}
+                        </span>
+                        <div className="day-date">{formatShortDate(date)}, {date.getFullYear()}</div>
+                      </div>
+                      <div className="slots-container">
+                        {getSignupFamiliesForDate(date).map(family => {
+                          const assignment = getSignupAssignmentForSlot(date, family.family_id);
+                          const slotClass = assignment
+                            ? assignment.delivered_at ? 'slot-delivered' : 'slot-taken'
+                            : 'slot-open';
+                          return (
+                            <div key={family.id} className={`slot ${slotClass}`}>
+                              <div className="slot-family">Family #{family.family_id}</div>
+                              <div className="slot-address">{family.address}</div>
+                              <div className="slot-meta">
+                                <span>📋 {family.instructions || 'Leave at door'}</span>
+                              </div>
+                              {assignment ? (
+                                <div className="slot-volunteer">
+                                  <div className="volunteer-info">
+                                    <span className="volunteer-name">
+                                      {assignment.delivered_at ? '✅' : '✓'} {assignment.volunteer_name}
+                                    </span>
+                                    {assignment.volunteer_phone && (
+                                      <span className="volunteer-phone">📞 {assignment.volunteer_phone}</span>
+                                    )}
+                                    {assignment.delivered_at && <span className="delivered-badge">DELIVERED</span>}
+                                  </div>
+                                  <button
+                                    className="admin-cancel-btn"
+                                    onClick={() => handleCancelAssignment(assignment)}
+                                    title={assignment.delivered_at ? 'Clear this delivery' : 'Cancel this sign-up'}
+                                  >
+                                    {assignment.delivered_at ? '✕ Clear' : '✕ Cancel'}
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="slot-volunteer">
+                                  <span className="open-badge">OPEN</span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </section>
+        )}
+
         {/* Assignments Tab */}
         {activeTab === 'assignments' && (
           <section className="admin-list-section">
@@ -653,15 +938,13 @@ export default function AdminPage() {
                       <span className="cell-date">{formatDateTime(assignment.created_at)}</span>
                       <span className={`cell-status ${assignment.delivered_at ? 'status-delivered' : 'status-pending'}`}>
                         {assignment.delivered_at ? '✅ Delivered' : '🕐 Pending'}
-                        {!assignment.delivered_at && (
-                          <button
-                            className="admin-cancel-btn"
-                            onClick={() => handleCancelAssignment(assignment)}
-                            title="Cancel this sign-up"
-                          >
-                            ✕ Cancel
-                          </button>
-                        )}
+                        <button
+                          className="admin-cancel-btn"
+                          onClick={() => handleCancelAssignment(assignment)}
+                          title={assignment.delivered_at ? 'Clear this delivery' : 'Cancel this sign-up'}
+                        >
+                          {assignment.delivered_at ? '✕ Clear' : '✕ Cancel'}
+                        </button>
                       </span>
                     </div>
                   );
