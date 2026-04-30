@@ -48,8 +48,16 @@ export default function KitchenPage() {
 
   const todayStr = dayNames[new Date().getDay()];
   const filteredFamilies = getFamiliesForDay();
+  const isThursday = selectedDay === 'Thursday';
+  const getsThursdayMeal = (f) => !f.delivery_days || f.delivery_days.includes('Thursday');
+  const getsSaturdayMeal = (f) => !!f.saturday_meals;
   const totalPeople = filteredFamilies.reduce((sum, f) => sum + (f.people_count || 0), 0);
-  const showSaturdayCol = selectedDay === 'Thursday';
+  const thursdayPeople = filteredFamilies
+    .filter(getsThursdayMeal)
+    .reduce((sum, f) => sum + (f.people_count || 0), 0);
+  const saturdayPeople = filteredFamilies
+    .filter(getsSaturdayMeal)
+    .reduce((sum, f) => sum + (f.people_count || 0), 0);
 
   if (loading) {
     return (
@@ -65,7 +73,14 @@ export default function KitchenPage() {
         <h1>Kitchen of Kindness</h1>
         <div className="kitchen-summary">
           <span className="kitchen-summary-item">{filteredFamilies.length} Families</span>
-          <span className="kitchen-summary-item">{totalPeople} People</span>
+          {isThursday ? (
+            <>
+              <span className="kitchen-summary-item">{thursdayPeople} Thu People</span>
+              <span className="kitchen-summary-item">{saturdayPeople} Sat People</span>
+            </>
+          ) : (
+            <span className="kitchen-summary-item">{totalPeople} People</span>
+          )}
         </div>
       </header>
 
@@ -87,16 +102,22 @@ export default function KitchenPage() {
           <thead>
             <tr>
               <th className="col-id">#</th>
-              <th className="col-people">People</th>
+              {isThursday ? (
+                <>
+                  <th className="col-people">Thu People</th>
+                  <th className="col-people">Sat People</th>
+                </>
+              ) : (
+                <th className="col-people">People</th>
+              )}
               <th className="col-notes">Notes / Instructions</th>
               <th className="col-address">Address</th>
-              {showSaturdayCol && <th className="col-saturday">Sat Meals</th>}
             </tr>
           </thead>
           <tbody>
             {filteredFamilies.length === 0 ? (
               <tr>
-                <td colSpan={showSaturdayCol ? 5 : 4} className="kitchen-empty">
+                <td colSpan={isThursday ? 5 : 4} className="kitchen-empty">
                   No families scheduled for {selectedDay}
                 </td>
               </tr>
@@ -104,16 +125,18 @@ export default function KitchenPage() {
               filteredFamilies.map((family, idx) => (
                 <tr key={family.id} className={idx % 2 === 0 ? 'row-even' : 'row-odd'}>
                   <td className="col-id">{family.family_id}</td>
-                  <td className="col-people">{family.people_count || '-'}</td>
+                  {isThursday ? (
+                    <>
+                      <td className="col-people">{getsThursdayMeal(family) ? (family.people_count || '-') : '-'}</td>
+                      <td className="col-people">{getsSaturdayMeal(family) ? (family.people_count || '-') : '-'}</td>
+                    </>
+                  ) : (
+                    <td className="col-people">{family.people_count || '-'}</td>
+                  )}
                   <td className="col-notes">
                     {[family.instructions, family.notes].filter(Boolean).join(' — ') || '-'}
                   </td>
                   <td className="col-address">{family.address}</td>
-                  {showSaturdayCol && (
-                    <td className={`col-saturday ${family.saturday_meals ? 'sat-yes' : 'sat-no'}`}>
-                      {family.saturday_meals ? 'YES' : '-'}
-                    </td>
-                  )}
                 </tr>
               ))
             )}
@@ -122,14 +145,16 @@ export default function KitchenPage() {
             <tfoot>
               <tr>
                 <td className="col-id"><strong>Total</strong></td>
-                <td className="col-people"><strong>{totalPeople}</strong></td>
+                {isThursday ? (
+                  <>
+                    <td className="col-people"><strong>{thursdayPeople}</strong></td>
+                    <td className="col-people"><strong>{saturdayPeople}</strong></td>
+                  </>
+                ) : (
+                  <td className="col-people"><strong>{totalPeople}</strong></td>
+                )}
                 <td className="col-notes"></td>
                 <td className="col-address"></td>
-                {showSaturdayCol && (
-                  <td className="col-saturday">
-                    <strong>{filteredFamilies.filter(f => f.saturday_meals).length}</strong>
-                  </td>
-                )}
               </tr>
             </tfoot>
           )}
