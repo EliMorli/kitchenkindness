@@ -1,9 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import Script from 'next/script';
 import { supabase } from '../../lib/supabase';
 
 const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD;
+const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 const ALL_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'];
 const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -61,6 +63,8 @@ export default function AdminPage() {
   const [signupsView, setSignupsView] = useState('today');
   const [signupsDate, setSignupsDate] = useState(getInitialDeliveryDate);
   const [signupsWeekStart, setSignupsWeekStart] = useState(getInitialWeekStart);
+  const [googleReady, setGoogleReady] = useState(false);
+  const addressInputRef = useRef(null);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -88,6 +92,35 @@ export default function AdminPage() {
       loadAssignments();
     }
   }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (activeTab !== 'families') return;
+    if (!googleReady) return;
+    if (!addressInputRef.current) return;
+    if (!window.google?.maps?.places?.Autocomplete) return;
+
+    const ac = new window.google.maps.places.Autocomplete(addressInputRef.current, {
+      types: ['address'],
+      componentRestrictions: { country: 'us' },
+      fields: ['formatted_address']
+    });
+
+    const listener = ac.addListener('place_changed', () => {
+      const place = ac.getPlace();
+      if (place?.formatted_address) {
+        setFormData(prev => ({ ...prev, address: place.formatted_address }));
+      }
+    });
+
+    return () => {
+      if (window.google?.maps?.event) {
+        window.google.maps.event.removeListener(listener);
+        if (addressInputRef.current) {
+          window.google.maps.event.clearInstanceListeners(addressInputRef.current);
+        }
+      }
+    };
+  }, [activeTab, googleReady]);
 
   const loadFamilies = async () => {
     if (!supabase) return;
@@ -558,6 +591,13 @@ export default function AdminPage() {
 
   return (
     <div className="admin-container">
+      {GOOGLE_MAPS_KEY && (
+        <Script
+          src={`https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_KEY}&libraries=places&v=weekly&loading=async`}
+          strategy="afterInteractive"
+          onLoad={() => setGoogleReady(true)}
+        />
+      )}
       <header className="admin-header">
         <h1>Kitchen of Kindness - Admin</h1>
         <a href="/" className="back-link">← Back to Sign-Up Page</a>
@@ -1082,11 +1122,14 @@ export default function AdminPage() {
                 <div className="form-group">
                   <label>Address *</label>
                   <input
+                    ref={addressInputRef}
                     type="text"
                     name="address"
                     value={formData.address}
                     onChange={handleInputChange}
-                    placeholder="123 Main St, City, CA 91234"
+                    onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}
+                    placeholder={GOOGLE_MAPS_KEY ? 'Start typing an address…' : '123 Main St, City, CA 91234'}
+                    autoComplete="off"
                     required
                   />
                 </div>
