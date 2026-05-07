@@ -65,6 +65,7 @@ export default function AdminPage() {
   const [signupsWeekStart, setSignupsWeekStart] = useState(getInitialWeekStart);
   const [googleReady, setGoogleReady] = useState(false);
   const addressInputRef = useRef(null);
+  const [copiedFlash, setCopiedFlash] = useState(false);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -794,6 +795,28 @@ export default function AdminPage() {
                   {!isSameDay(signupsDate) && (
                     <button className="today-btn" onClick={goToTodaySignups}>Go to Today</button>
                   )}
+                  {(() => {
+                    const openIds = getSignupFamiliesForDate(signupsDate)
+                      .filter(f => !getSignupAssignmentForSlot(signupsDate, f.family_id))
+                      .map(f => f.family_id);
+                    return (
+                      <button
+                        className="today-btn"
+                        disabled={openIds.length === 0}
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(openIds.join('\n'));
+                            setCopiedFlash(true);
+                            setTimeout(() => setCopiedFlash(false), 1500);
+                          } catch (err) {
+                            console.error('Clipboard write failed:', err);
+                          }
+                        }}
+                      >
+                        {copiedFlash ? '✓ Copied!' : `📋 Copy open IDs (${openIds.length})`}
+                      </button>
+                    );
+                  })()}
                   <button onClick={() => navigateSignupDay(1)}>Next Day →</button>
                 </div>
 
