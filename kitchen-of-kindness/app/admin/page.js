@@ -817,6 +817,17 @@ export default function AdminPage() {
                       </button>
                     );
                   })()}
+                  <button
+                    className="today-btn"
+                    onClick={() => {
+                      const yyyy = signupsDate.getFullYear();
+                      const mm = String(signupsDate.getMonth() + 1).padStart(2, '0');
+                      const dd = String(signupsDate.getDate()).padStart(2, '0');
+                      window.open(`/admin/print-labels?date=${yyyy}-${mm}-${dd}`, '_blank');
+                    }}
+                  >
+                    🖨️ Print labels
+                  </button>
                   <button onClick={() => navigateSignupDay(1)}>Next Day →</button>
                 </div>
 
