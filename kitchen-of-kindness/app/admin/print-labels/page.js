@@ -1,11 +1,11 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { supabase } from '../../../lib/supabase';
 
-// Default label dimensions — tune these once the actual thermal label is identified.
-// Common Brother QL label: 62mm × 90mm. Adjust the @page size + .label-page width/min-height below.
+// Labels: JADENS 4 in × 6 in thermal shipping labels (portrait).
+// Printer paper-size driver setting should match (any standard 4×6 thermal printer).
 const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -29,6 +29,7 @@ function PrintLabelsContent() {
   const [families, setFamilies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [printTriggered, setPrintTriggered] = useState(false);
+  const labelRefs = useRef([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -71,6 +72,26 @@ function PrintLabelsContent() {
     });
   }
 
+  useLayoutEffect(() => {
+    if (loading || labels.length === 0) return;
+    for (let i = 0; i < labels.length; i++) {
+      const el = labelRefs.current[i];
+      if (!el) continue;
+      const notes = el.querySelector('.label-notes');
+      const address = el.querySelector('.label-address');
+      let notesPt = 13;
+      while (el.scrollHeight > el.clientHeight && notesPt > 8 && notes) {
+        notesPt -= 1;
+        notes.style.fontSize = `${notesPt}pt`;
+      }
+      let addrPt = 18;
+      while (el.scrollHeight > el.clientHeight && addrPt > 12 && address) {
+        addrPt -= 1;
+        address.style.fontSize = `${addrPt}pt`;
+      }
+    }
+  }, [loading, labels.length]);
+
   useEffect(() => {
     if (loading || printTriggered || labels.length === 0) return;
     const t = setTimeout(() => {
@@ -95,7 +116,7 @@ function PrintLabelsContent() {
   return (
     <>
       <style>{`
-        @page { size: 62mm 90mm; margin: 4mm; }
+        @page { size: 4in 6in; margin: 0.2in; }
         @media print {
           html, body { background: #fff; margin: 0; padding: 0; }
           .no-print { display: none !important; }
@@ -129,43 +150,44 @@ function PrintLabelsContent() {
         .toolbar button:hover { background: #efefef; }
         .toolbar .hint { color: #555; font-size: 12px; max-width: 600px; }
         .label-page {
-          width: 54mm;
-          min-height: 82mm;
-          padding: 2mm;
-          margin: 6mm auto;
+          width: 3.6in;
+          height: 5.6in;
+          padding: 0.1in;
+          margin: 0.25in auto;
           box-sizing: border-box;
           background: #fff;
           color: #000;
           border: 1px dashed #aaa;
           display: flex;
           flex-direction: column;
-          gap: 1.5mm;
+          gap: 0.1in;
           position: relative;
+          overflow: hidden;
           page-break-inside: avoid;
           break-inside: avoid;
         }
         .label-id {
-          font-size: 28pt;
+          font-size: 72pt;
           font-weight: 800;
           line-height: 1;
-          letter-spacing: -0.5px;
+          letter-spacing: -1px;
         }
         .label-meals {
-          font-size: 18pt;
+          font-size: 36pt;
           font-weight: 700;
-          line-height: 1.1;
+          line-height: 1.05;
         }
         .label-address {
-          font-size: 11pt;
-          line-height: 1.25;
+          font-size: 18pt;
+          line-height: 1.2;
           word-break: break-word;
         }
         .label-phone {
-          font-size: 11pt;
+          font-size: 18pt;
           font-weight: 600;
         }
         .label-notes {
-          font-size: 9pt;
+          font-size: 13pt;
           line-height: 1.25;
           color: #222;
           word-break: break-word;
@@ -173,15 +195,15 @@ function PrintLabelsContent() {
         }
         .sat-badge {
           position: absolute;
-          top: 2mm;
-          right: 2mm;
+          top: 0.1in;
+          right: 0.1in;
           background: #c8102e;
           color: #fff;
           font-weight: 800;
-          font-size: 11pt;
-          padding: 1mm 2mm;
-          border-radius: 1mm;
-          letter-spacing: 1px;
+          font-size: 22pt;
+          padding: 0.04in 0.1in;
+          border-radius: 0.05in;
+          letter-spacing: 2px;
         }
       `}</style>
 
@@ -191,20 +213,24 @@ function PrintLabelsContent() {
         <button onClick={() => window.print()}>🖨️ Print again</button>
         <button onClick={() => window.close()}>Close</button>
         <span className="hint">
-          Tip: in the print dialog, set paper size to your label and disable headers/footers. Once you confirm
-          the printer/label, adjust the <code>@page size</code> at the top of <code>app/admin/print-labels/page.js</code>.
+          Sized for 4×6 in thermal labels (portrait). In the print dialog, set paper size to 4×6 and disable
+          headers/footers.
         </span>
       </div>
 
       {labels.length === 0 ? (
         <div style={{ padding: 20 }}>No deliveries scheduled for {formatFullDate(date)}.</div>
       ) : (
-        labels.map(label => {
+        labels.map((label, i) => {
           const f = label.family;
           const isSat = label.kind === 'saturday';
           const notes = [f.instructions, f.notes].filter(Boolean).join(' — ');
           return (
-            <div key={`${f.id}-${label.kind}`} className="label-page">
+            <div
+              key={`${f.id}-${label.kind}`}
+              ref={el => { labelRefs.current[i] = el; }}
+              className="label-page"
+            >
               {isSat && <div className="sat-badge">SAT</div>}
               <div className="label-id">#{f.family_id}</div>
               <div className="label-meals">Meals: {f.people_count || '?'}</div>
