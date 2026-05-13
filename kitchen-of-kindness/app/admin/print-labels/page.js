@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { supabase } from '../../../lib/supabase';
 
@@ -29,6 +29,7 @@ function PrintLabelsContent() {
   const [families, setFamilies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [printTriggered, setPrintTriggered] = useState(false);
+  const labelRefs = useRef([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,6 +71,26 @@ function PrintLabelsContent() {
       }
     });
   }
+
+  useLayoutEffect(() => {
+    if (loading || labels.length === 0) return;
+    for (let i = 0; i < labels.length; i++) {
+      const el = labelRefs.current[i];
+      if (!el) continue;
+      const notes = el.querySelector('.label-notes');
+      const address = el.querySelector('.label-address');
+      let notesPt = 13;
+      while (el.scrollHeight > el.clientHeight && notesPt > 8 && notes) {
+        notesPt -= 1;
+        notes.style.fontSize = `${notesPt}pt`;
+      }
+      let addrPt = 18;
+      while (el.scrollHeight > el.clientHeight && addrPt > 12 && address) {
+        addrPt -= 1;
+        address.style.fontSize = `${addrPt}pt`;
+      }
+    }
+  }, [loading, labels.length]);
 
   useEffect(() => {
     if (loading || printTriggered || labels.length === 0) return;
@@ -130,7 +151,7 @@ function PrintLabelsContent() {
         .toolbar .hint { color: #555; font-size: 12px; max-width: 600px; }
         .label-page {
           width: 3.6in;
-          min-height: 5.6in;
+          height: 5.6in;
           padding: 0.1in;
           margin: 0.25in auto;
           box-sizing: border-box;
@@ -141,6 +162,7 @@ function PrintLabelsContent() {
           flex-direction: column;
           gap: 0.1in;
           position: relative;
+          overflow: hidden;
           page-break-inside: avoid;
           break-inside: avoid;
         }
@@ -199,12 +221,16 @@ function PrintLabelsContent() {
       {labels.length === 0 ? (
         <div style={{ padding: 20 }}>No deliveries scheduled for {formatFullDate(date)}.</div>
       ) : (
-        labels.map(label => {
+        labels.map((label, i) => {
           const f = label.family;
           const isSat = label.kind === 'saturday';
           const notes = [f.instructions, f.notes].filter(Boolean).join(' — ');
           return (
-            <div key={`${f.id}-${label.kind}`} className="label-page">
+            <div
+              key={`${f.id}-${label.kind}`}
+              ref={el => { labelRefs.current[i] = el; }}
+              className="label-page"
+            >
               {isSat && <div className="sat-badge">SAT</div>}
               <div className="label-id">#{f.family_id}</div>
               <div className="label-meals">Meals: {f.people_count || '?'}</div>
