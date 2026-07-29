@@ -64,6 +64,7 @@ export default function AdminPage() {
   const [signupsDate, setSignupsDate] = useState(getInitialDeliveryDate);
   const [signupsWeekStart, setSignupsWeekStart] = useState(getInitialWeekStart);
   const [googleReady, setGoogleReady] = useState(false);
+  const [googleFailed, setGoogleFailed] = useState(false);
   const addressInputRef = useRef(null);
   const [copiedFlash, setCopiedFlash] = useState(false);
 
@@ -95,8 +96,22 @@ export default function AdminPage() {
   }, [isAuthenticated]);
 
   useEffect(() => {
+    // Intercept Google Maps auth failures BEFORE the API script runs.
+    // Without this, an invalid/expired/quota-exceeded key triggers a modal alert
+    // that blocks all page interaction (including typing in the address field).
+    window.gm_authFailure = () => {
+      console.warn('Google Maps API auth failed — falling back to manual address entry.');
+      setGoogleFailed(true);
+    };
+    return () => {
+      window.gm_authFailure = undefined;
+    };
+  }, []);
+
+  useEffect(() => {
     if (activeTab !== 'families') return;
     if (!googleReady) return;
+    if (googleFailed) return;
     if (!addressInputRef.current) return;
     if (!window.google?.maps?.places?.Autocomplete) return;
 
@@ -121,7 +136,7 @@ export default function AdminPage() {
         }
       }
     };
-  }, [activeTab, googleReady]);
+  }, [activeTab, googleReady, googleFailed]);
 
   const loadFamilies = async () => {
     if (!supabase) return;
@@ -592,11 +607,15 @@ export default function AdminPage() {
 
   return (
     <div className="admin-container">
-      {GOOGLE_MAPS_KEY && (
+      {GOOGLE_MAPS_KEY && !googleFailed && (
         <Script
           src={`https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_KEY}&libraries=places&v=weekly&loading=async`}
           strategy="afterInteractive"
           onLoad={() => setGoogleReady(true)}
+          onError={() => {
+            console.warn('Google Maps API failed to load — falling back to manual address entry.');
+            setGoogleFailed(true);
+          }}
         />
       )}
       <header className="admin-header">
@@ -1161,11 +1180,18 @@ export default function AdminPage() {
                     name="address"
                     value={formData.address}
                     onChange={handleInputChange}
-                    onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}
-                    placeholder={GOOGLE_MAPS_KEY ? 'Start typing an address…' : '123 Main St, City, CA 91234'}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && GOOGLE_MAPS_KEY && !googleFailed) e.preventDefault();
+                    }}
+                    placeholder={GOOGLE_MAPS_KEY && !googleFailed ? 'Start typing an address…' : '123 Main St, City, CA 91234'}
                     autoComplete="off"
                     required
                   />
+                  {googleFailed && (
+                    <small style={{ display: 'block', marginTop: '4px', color: '#a05a00' }}>
+                      ⚠️ Address autocomplete unavailable — type the address manually.
+                    </small>
+                  )}
                 </div>
 
                 <div className="form-group">
