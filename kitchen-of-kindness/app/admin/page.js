@@ -131,6 +131,20 @@ export default function AdminPage() {
     if (!addressInputRef.current) return;
     if (!window.google?.maps?.places?.Autocomplete) return;
 
+    // Probe the Places API before wiring up the widget. A key can load the
+    // base Maps JS API but still be blocked from calling Places specifically
+    // (ApiTargetBlockedMapError → REQUEST_DENIED status). That doesn't fire
+    // gm_authFailure, so we detect it here and fall back to manual entry
+    // instead of letting the widget spam errors on every keystroke.
+    const probe = new window.google.maps.places.AutocompleteService();
+    probe.getPlacePredictions({ input: '1' }, (_predictions, status) => {
+      const S = window.google.maps.places.PlacesServiceStatus;
+      if (status === S.REQUEST_DENIED) {
+        console.warn('Google Places API rejected the request — falling back to manual address entry.');
+        setGoogleFailed(true);
+      }
+    });
+
     const ac = new window.google.maps.places.Autocomplete(addressInputRef.current, {
       types: ['address'],
       componentRestrictions: { country: 'us' },
