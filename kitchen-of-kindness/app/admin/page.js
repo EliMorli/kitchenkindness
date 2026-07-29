@@ -46,6 +46,21 @@ const getInitialWeekStart = () => {
   return sunday;
 };
 
+// Install the Google Maps auth-failure handler at module scope so it exists
+// before Google's script executes. Without this, an expired/invalid key
+// triggers a modal alert that blocks all page interaction (including typing
+// the address). The handler flips a window flag and dispatches a DOM event
+// the component can subscribe to for its own state update.
+if (typeof window !== 'undefined' && !window.__gmAuthHandlerInstalled) {
+  window.__gmAuthHandlerInstalled = true;
+  window.__gmAuthFailed = false;
+  window.gm_authFailure = () => {
+    console.warn('Google Maps API auth failed — falling back to manual address entry.');
+    window.__gmAuthFailed = true;
+    window.dispatchEvent(new CustomEvent('gm-auth-failed'));
+  };
+}
+
 export default function AdminPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [passwordInput, setPasswordInput] = useState('');
@@ -96,16 +111,17 @@ export default function AdminPage() {
   }, [isAuthenticated]);
 
   useEffect(() => {
-    // Intercept Google Maps auth failures BEFORE the API script runs.
-    // Without this, an invalid/expired/quota-exceeded key triggers a modal alert
-    // that blocks all page interaction (including typing in the address field).
-    window.gm_authFailure = () => {
-      console.warn('Google Maps API auth failed — falling back to manual address entry.');
+    // The module-scope handler above installs window.gm_authFailure before
+    // any React lifecycle runs. Here we sync that flag into component state
+    // — both catching a failure that already happened and subscribing for
+    // future ones.
+    if (typeof window !== 'undefined' && window.__gmAuthFailed) {
       setGoogleFailed(true);
-    };
-    return () => {
-      window.gm_authFailure = undefined;
-    };
+      return;
+    }
+    const handler = () => setGoogleFailed(true);
+    window.addEventListener('gm-auth-failed', handler);
+    return () => window.removeEventListener('gm-auth-failed', handler);
   }, []);
 
   useEffect(() => {
