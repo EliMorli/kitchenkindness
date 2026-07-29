@@ -1173,7 +1173,26 @@ export default function AdminPage() {
 
               <form onSubmit={handleSubmit} className="admin-form">
                 <div className="form-group">
-                  <label>Address *</label>
+                  <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                    <span>Address *</span>
+                    {GOOGLE_MAPS_KEY && !googleFailed && (
+                      <button
+                        type="button"
+                        onClick={() => setGoogleFailed(true)}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: '#0066cc',
+                          cursor: 'pointer',
+                          textDecoration: 'underline',
+                          fontSize: 12,
+                          padding: 0
+                        }}
+                      >
+                        ✎ Type manually (disable autocomplete)
+                      </button>
+                    )}
+                  </label>
                   <input
                     ref={addressInputRef}
                     type="text"
@@ -1189,7 +1208,7 @@ export default function AdminPage() {
                   />
                   {googleFailed && (
                     <small style={{ display: 'block', marginTop: '4px', color: '#a05a00' }}>
-                      ⚠️ Address autocomplete unavailable — type the address manually.
+                      ⚠️ Address autocomplete off — type the address manually.
                     </small>
                   )}
                 </div>
