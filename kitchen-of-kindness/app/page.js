@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
+import { computeGroups, groupBadgeClass, groupLabel } from '../lib/groups';
 
 // Families are loaded from Supabase - empty fallback if database is unavailable
 const fallbackFamilies = [];
@@ -91,10 +92,13 @@ export default function Home() {
       if (data && data.length > 0) {
         const formattedFamilies = data.map(f => ({
           id: f.family_id,
+          family_id: f.family_id,
           address: f.address,
           instructions: f.instructions || 'Leave at door',
           contact: f.contact || '',
-          delivery_days: f.delivery_days || ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday']
+          delivery_days: f.delivery_days || ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'],
+          latitude: f.latitude ?? null,
+          longitude: f.longitude ?? null
         }));
         setFamilies(formattedFamilies);
       }
@@ -298,7 +302,16 @@ export default function Home() {
 
   const getFamiliesForDate = (date) => {
     const dayName = dayNames[date.getDay()];
-    return families.filter(f => !f.delivery_days || f.delivery_days.includes(dayName));
+    const list = families.filter(f => !f.delivery_days || f.delivery_days.includes(dayName));
+    const groups = computeGroups(list);
+    return list
+      .map(f => ({ ...f, group: groups.get(f.family_id) ?? null }))
+      .sort((a, b) => {
+        const ag = a.group ?? Infinity;
+        const bg = b.group ?? Infinity;
+        if (ag !== bg) return ag - bg;
+        return Number(a.family_id) - Number(b.family_id);
+      });
   };
 
   // Stats for a specific date
@@ -427,7 +440,10 @@ export default function Home() {
                     onClick={() => assignment ? handleTakenSlotClick(currentDate, family, assignment) : handleSlotClick(currentDate, family)}
                   >
                     <div className="slot-main">
-                      <div className="slot-family">Family #{family.id}</div>
+                      <div className="slot-family">
+                        Family #{family.id}
+                        <span className={groupBadgeClass(family.group)}>Group {groupLabel(family.group)}</span>
+                      </div>
                       <div className="slot-address">{family.address}</div>
                       <div className="slot-meta">
                         <span>📋 {family.instructions}</span>
@@ -528,7 +544,10 @@ export default function Home() {
                           className={`slot ${assignment ? (assignment.deliveredAt ? 'slot-delivered' : 'slot-taken') : 'slot-open'}`}
                           onClick={() => assignment ? handleTakenSlotClick(date, family, assignment) : handleSlotClick(date, family)}
                         >
-                          <div className="slot-family">Family #{family.id}</div>
+                          <div className="slot-family">
+                            Family #{family.id}
+                            <span className={groupBadgeClass(family.group)}>Group {groupLabel(family.group)}</span>
+                          </div>
                           <div className="slot-address">{family.address}</div>
                           <div className="slot-meta">
                             <span>📋 {family.instructions}</span>
@@ -598,7 +617,10 @@ export default function Home() {
               </div>
               <div className="modal-info-row">
                 <span className="modal-info-label">Family</span>
-                <span className="modal-info-value">#{selectedFamily.id}</span>
+                <span className="modal-info-value">
+                  #{selectedFamily.id}
+                  <span className={groupBadgeClass(selectedFamily.group)}>Group {groupLabel(selectedFamily.group)}</span>
+                </span>
               </div>
               <div className="modal-info-row">
                 <span className="modal-info-label">Address</span>

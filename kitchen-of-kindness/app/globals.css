@@ -1888,4 +1888,46 @@ body {
   }
 }
 
+/* Delivery-group badges. See lib/groups.js. Colors deliberately avoid the
+   greens/reds already used by .open-badge and .status-badge.inactive. */
+.group-badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 20px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: #fff;
+  background: #64748b;
+  vertical-align: middle;
+  margin-left: 8px;
+  white-space: nowrap;
+}
+.group-badge.ungrouped { background: #94a3b8; }
+.group-badge.group-1  { background: #0891b2; }
+.group-badge.group-2  { background: #ea580c; }
+.group-badge.group-3  { background: #7c3aed; }
+.group-badge.group-4  { background: #0f766e; }
+.group-badge.group-5  { background: #db2777; }
+.group-badge.group-6  { background: #4338ca; }
+.group-badge.group-7  { background: #b45309; }
+.group-badge.group-8  { background: #be185d; }
+.group-badge.group-9  { background: #475569; }
+.group-badge.group-10 { background: #7c2d12; }
+
+/* Bigger variant for thermal print labels. Sized in points so it prints
+   consistently regardless of screen zoom. */
+.label-group-badge {
+  display: inline-block;
+  padding: 4pt 10pt;
+  border: 2pt solid #000;
+  border-radius: 4pt;
+  font-size: 22pt;
+  font-weight: 800;
+  letter-spacing: 1pt;
+  color: #000;
+  background: #fff;
+  line-height: 1;
+}
+
 
