@@ -331,45 +331,35 @@ export default function AdminPage() {
     }
 
     try {
-      if (editingId) {
-        const { error } = await supabase
-          .from('families')
-          .update({
-            address,
-            unit: formData.unit.trim(),
-            instructions: formData.instructions.trim(),
-            contact: formData.contact.trim(),
-            people_count: formData.people_count,
-            delivery_days: formData.delivery_days,
-            notes: formData.notes.trim(),
-            saturday_meals: formData.saturday_meals,
-            active: formData.active,
-            latitude,
-            longitude
-          })
-          .eq('id', editingId);
+      const payload = {
+        address,
+        unit: formData.unit.trim(),
+        instructions: formData.instructions.trim(),
+        contact: formData.contact.trim(),
+        people_count: formData.people_count,
+        delivery_days: formData.delivery_days,
+        notes: formData.notes.trim(),
+        saturday_meals: formData.saturday_meals,
+        active: formData.active,
+        latitude,
+        longitude
+      };
+      const save = data =>
+        editingId
+          ? supabase.from('families').update(data).eq('id', editingId)
+          : supabase.from('families').insert({ family_id: getNextFamilyId(), ...data });
 
-        if (error) throw error;
-      } else {
-        const { error } = await supabase
-          .from('families')
-          .insert({
-            family_id: getNextFamilyId(),
-            address,
-            unit: formData.unit.trim(),
-            instructions: formData.instructions.trim(),
-            contact: formData.contact.trim(),
-            people_count: formData.people_count,
-            delivery_days: formData.delivery_days,
-            notes: formData.notes.trim(),
-            saturday_meals: formData.saturday_meals,
-            active: formData.active,
-            latitude,
-            longitude
-          });
-
-        if (error) throw error;
+      let { error } = await save(payload);
+      if (error && /unit/i.test(error.message || '')) {
+        // families.unit column not migrated yet — save the rest, warn once.
+        console.warn('families.unit column missing; saving without unit. Run the add-family-unit migration.');
+        const { unit, ...withoutUnit } = payload;
+        ({ error } = await save(withoutUnit));
+        if (!error && payload.unit) {
+          alert('Saved, but the Unit # could not be stored yet (database migration pending). Re-save the unit after the migration runs.');
+        }
       }
+      if (error) throw error;
 
       await loadFamilies();
       resetForm();
