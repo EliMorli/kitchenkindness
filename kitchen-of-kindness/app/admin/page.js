@@ -90,6 +90,7 @@ export default function AdminPage() {
   // Form state
   const [formData, setFormData] = useState({
     address: '',
+    unit: '',
     instructions: 'Leave at door',
     contact: '',
     people_count: 1,
@@ -272,6 +273,7 @@ export default function AdminPage() {
   const resetForm = () => {
     setFormData({
       address: '',
+      unit: '',
       instructions: 'Leave at door',
       contact: '',
       people_count: 1,
@@ -334,6 +336,7 @@ export default function AdminPage() {
           .from('families')
           .update({
             address,
+            unit: formData.unit.trim(),
             instructions: formData.instructions.trim(),
             contact: formData.contact.trim(),
             people_count: formData.people_count,
@@ -353,6 +356,7 @@ export default function AdminPage() {
           .insert({
             family_id: getNextFamilyId(),
             address,
+            unit: formData.unit.trim(),
             instructions: formData.instructions.trim(),
             contact: formData.contact.trim(),
             people_count: formData.people_count,
@@ -379,6 +383,7 @@ export default function AdminPage() {
   const handleEdit = (family) => {
     setFormData({
       address: family.address,
+      unit: family.unit || '',
       instructions: family.instructions || 'Leave at door',
       contact: family.contact || '',
       people_count: family.people_count || 1,
@@ -971,7 +976,7 @@ export default function AdminPage() {
                     <div key={idx} className="unfilled-item">
                       <span className="unfilled-date">{slot.dayName.slice(0, 3)}, {slot.date.toLocaleDateString()}</span>
                       <span className="unfilled-family">Family #{slot.family.family_id}</span>
-                      <span className="unfilled-address">{formatAddress(slot.family.address)}</span>
+                      <span className="unfilled-address">{formatAddress(slot.family.address, slot.family.unit)}</span>
                     </div>
                   ))}
                   {stats.upcomingUnfilled.length > 10 && (
@@ -1123,7 +1128,7 @@ export default function AdminPage() {
                             Family #{family.family_id}
                             <span className={groupBadge(family.group, family).className}>{groupBadge(family.group, family).text}</span>
                           </div>
-                          <div className="slot-address">{formatAddress(family.address)}</div>
+                          <div className="slot-address">{formatAddress(family.address, family.unit)}</div>
                           <div className="slot-meta">
                             <span>📋 {formatNote(family.instructions || 'Leave at door')}</span>
                             {family.contact && <span>📞 {family.contact}</span>}
@@ -1202,7 +1207,7 @@ export default function AdminPage() {
                                 Family #{family.family_id}
                                 <span className={groupBadge(family.group, family).className}>{groupBadge(family.group, family).text}</span>
                               </div>
-                              <div className="slot-address">{formatAddress(family.address)}</div>
+                              <div className="slot-address">{formatAddress(family.address, family.unit)}</div>
                               <div className="slot-meta">
                                 <span>📋 {formatNote(family.instructions || 'Leave at door')}</span>
                               </div>
@@ -1480,6 +1485,21 @@ export default function AdminPage() {
                 </div>
 
                 <div className="form-group">
+                  <label>Unit / Apt # (optional)</label>
+                  <input
+                    type="text"
+                    name="unit"
+                    value={formData.unit}
+                    onChange={handleInputChange}
+                    placeholder="e.g. 127 — leave empty if none"
+                    autoComplete="off"
+                  />
+                  <small style={{ display: 'block', marginTop: '4px', color: '#666' }}>
+                    Keep the street address above clean for autocomplete; put the apartment/unit number here.
+                  </small>
+                </div>
+
+                <div className="form-group">
                   <label>People in Family</label>
                   <input
                     type="number"
@@ -1626,7 +1646,7 @@ export default function AdminPage() {
                           {family.active ? 'Active' : 'Inactive'}
                         </span>
                       </div>
-                      <div className="family-address">{formatAddress(family.address)}</div>
+                      <div className="family-address">{formatAddress(family.address, family.unit)}</div>
                       <div className="family-details">
                         <span>👥 {family.people_count || '-'} people</span>
                         {family.contact && <span>📞 {family.contact}</span>}
