@@ -2,8 +2,8 @@
 
 import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
-import { computeGroups, groupBadge } from '../../lib/groups';
-import { formatAddress, formatNote } from '../../lib/format';
+import { computeGroups, groupBadge, isPickup } from '../../lib/groups';
+import { formatAddress, formatNote, addressArea } from '../../lib/format';
 
 const DELIVERY_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'];
 const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -18,6 +18,7 @@ export default function KitchenPage() {
   const [families, setFamilies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedDay, setSelectedDay] = useState(getDefaultDay);
+  const [copiedFlash, setCopiedFlash] = useState(false);
 
   useEffect(() => {
     loadFamilies();
@@ -57,6 +58,52 @@ export default function KitchenPage() {
       });
   };
 
+  // WhatsApp-ready list of the day's deliveries, grouped: the admin copies
+  // this and pastes it into the volunteers group chat.
+  const buildWhatsAppList = (fams) => {
+    const grouped = new Map();
+    const pickups = [];
+    const ungrouped = [];
+    fams.forEach(f => {
+      if (f.group != null) {
+        if (!grouped.has(f.group)) grouped.set(f.group, []);
+        grouped.get(f.group).push(f);
+      } else if (isPickup(f)) {
+        pickups.push(f);
+      } else {
+        ungrouped.push(f);
+      }
+    });
+    const lines = [`\u{1F372} Kitchen of Kindness \u2014 ${selectedDay} deliveries`, ''];
+    for (const [g, list] of grouped) {
+      lines.push(`*Group ${g}* (${list.length} ${list.length === 1 ? 'bag' : 'bags'})`);
+      list.forEach(f => {
+        const sat = selectedDay === 'Thursday' && f.saturday_meals ? ' (+Sat)' : '';
+        lines.push(`${f.family_id} \u2014 ${addressArea(f.address) || '\u2014'}${sat}`);
+      });
+      lines.push('');
+    }
+    if (ungrouped.length) {
+      lines.push('*Ungrouped*');
+      ungrouped.forEach(f => lines.push(`${f.family_id} \u2014 ${addressArea(f.address) || '\u2014'}`));
+      lines.push('');
+    }
+    if (pickups.length) {
+      lines.push(`*Pickup at kitchen*: ${pickups.map(f => f.family_id).join(', ')}`);
+    }
+    return lines.join('\n').trim();
+  };
+
+  const handleCopyList = async () => {
+    try {
+      await navigator.clipboard.writeText(buildWhatsAppList(filteredFamilies));
+      setCopiedFlash(true);
+      setTimeout(() => setCopiedFlash(false), 1500);
+    } catch (err) {
+      console.error('Clipboard write failed:', err);
+    }
+  };
+
   const todayStr = dayNames[new Date().getDay()];
   const filteredFamilies = getFamiliesForDay();
   const isThursday = selectedDay === 'Thursday';
@@ -83,6 +130,14 @@ export default function KitchenPage() {
       <header className="kitchen-header">
         <h1>Kitchen of Kindness</h1>
         <div className="kitchen-summary">
+          <button
+            className="kitchen-copy-btn"
+            onClick={handleCopyList}
+            disabled={filteredFamilies.length === 0}
+            title="Copy the day's groups as a WhatsApp-ready list"
+          >
+            {copiedFlash ? '\u2713 Copied!' : '\u{1F4CB} Copy list'}
+          </button>
           <span className="kitchen-summary-item">{filteredFamilies.length} Families</span>
           {isThursday ? (
             <>

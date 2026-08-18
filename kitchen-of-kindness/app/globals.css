@@ -1888,6 +1888,21 @@ body {
   }
 }
 
+/* Copy-for-WhatsApp button in the kitchen header */
+.kitchen-copy-btn {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.kitchen-copy-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.4); }
+.kitchen-copy-btn:disabled { opacity: 0.5; cursor: default; }
+
 /* Delivery-group badges. See lib/groups.js. Colors deliberately avoid the
    greens/reds already used by .open-badge and .status-badge.inactive. */
 .group-badge {

@@ -36,6 +36,22 @@ export function formatAddress(raw, unit) {
   return s;
 }
 
+// Best-effort neighborhood/city for compact lists ("12413 Sylvan St, Los
+// Angeles CA 91606" → "Los Angeles"). Empty string when the address has no
+// area segment to extract.
+export function addressArea(raw) {
+  if (!raw) return '';
+  const parts = formatAddress(raw).split(',').map(p => p.trim());
+  for (let i = 1; i < parts.length; i++) {
+    const cleaned = parts[i]
+      .replace(/\b(CA|California)\b\.?/gi, '')
+      .replace(/\b\d{5}(-\d{4})?\b/g, '')
+      .trim();
+    if (cleaned) return cleaned;
+  }
+  return '';
+}
+
 export function formatNote(raw) {
   if (!raw) return raw;
   const s = raw.trim();
