@@ -250,7 +250,7 @@ function PrintLabelsContent() {
               <div className="label-group-badge">{groupBadge(label.group, f).text}</div>
               <div className="label-id">#{f.family_id}</div>
               <div className="label-meals">Meals: {f.people_count || '?'}</div>
-              <div className="label-address">{formatAddress(f.address)}</div>
+              <div className="label-address">{formatAddress(f.address, f.unit)}</div>
               {f.contact && <div className="label-phone">📞 {f.contact}</div>}
               {notes && <div className="label-notes">📋 {notes}</div>}
             </div>

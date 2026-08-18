@@ -90,6 +90,7 @@ export default function AdminPage() {
   // Form state
   const [formData, setFormData] = useState({
     address: '',
+    unit: '',
     instructions: 'Leave at door',
     contact: '',
     people_count: 1,
@@ -272,6 +273,7 @@ export default function AdminPage() {
   const resetForm = () => {
     setFormData({
       address: '',
+      unit: '',
       instructions: 'Leave at door',
       contact: '',
       people_count: 1,
@@ -329,43 +331,35 @@ export default function AdminPage() {
     }
 
     try {
-      if (editingId) {
-        const { error } = await supabase
-          .from('families')
-          .update({
-            address,
-            instructions: formData.instructions.trim(),
-            contact: formData.contact.trim(),
-            people_count: formData.people_count,
-            delivery_days: formData.delivery_days,
-            notes: formData.notes.trim(),
-            saturday_meals: formData.saturday_meals,
-            active: formData.active,
-            latitude,
-            longitude
-          })
-          .eq('id', editingId);
+      const payload = {
+        address,
+        unit: formData.unit.trim(),
+        instructions: formData.instructions.trim(),
+        contact: formData.contact.trim(),
+        people_count: formData.people_count,
+        delivery_days: formData.delivery_days,
+        notes: formData.notes.trim(),
+        saturday_meals: formData.saturday_meals,
+        active: formData.active,
+        latitude,
+        longitude
+      };
+      const save = data =>
+        editingId
+          ? supabase.from('families').update(data).eq('id', editingId)
+          : supabase.from('families').insert({ family_id: getNextFamilyId(), ...data });
 
-        if (error) throw error;
-      } else {
-        const { error } = await supabase
-          .from('families')
-          .insert({
-            family_id: getNextFamilyId(),
-            address,
-            instructions: formData.instructions.trim(),
-            contact: formData.contact.trim(),
-            people_count: formData.people_count,
-            delivery_days: formData.delivery_days,
-            notes: formData.notes.trim(),
-            saturday_meals: formData.saturday_meals,
-            active: formData.active,
-            latitude,
-            longitude
-          });
-
-        if (error) throw error;
+      let { error } = await save(payload);
+      if (error && /unit/i.test(error.message || '')) {
+        // families.unit column not migrated yet — save the rest, warn once.
+        console.warn('families.unit column missing; saving without unit. Run the add-family-unit migration.');
+        const { unit, ...withoutUnit } = payload;
+        ({ error } = await save(withoutUnit));
+        if (!error && payload.unit) {
+          alert('Saved, but the Unit # could not be stored yet (database migration pending). Re-save the unit after the migration runs.');
+        }
       }
+      if (error) throw error;
 
       await loadFamilies();
       resetForm();
@@ -379,6 +373,7 @@ export default function AdminPage() {
   const handleEdit = (family) => {
     setFormData({
       address: family.address,
+      unit: family.unit || '',
       instructions: family.instructions || 'Leave at door',
       contact: family.contact || '',
       people_count: family.people_count || 1,
@@ -971,7 +966,7 @@ export default function AdminPage() {
                     <div key={idx} className="unfilled-item">
                       <span className="unfilled-date">{slot.dayName.slice(0, 3)}, {slot.date.toLocaleDateString()}</span>
                       <span className="unfilled-family">Family #{slot.family.family_id}</span>
-                      <span className="unfilled-address">{formatAddress(slot.family.address)}</span>
+                      <span className="unfilled-address">{formatAddress(slot.family.address, slot.family.unit)}</span>
                     </div>
                   ))}
                   {stats.upcomingUnfilled.length > 10 && (
@@ -1123,7 +1118,7 @@ export default function AdminPage() {
                             Family #{family.family_id}
                             <span className={groupBadge(family.group, family).className}>{groupBadge(family.group, family).text}</span>
                           </div>
-                          <div className="slot-address">{formatAddress(family.address)}</div>
+                          <div className="slot-address">{formatAddress(family.address, family.unit)}</div>
                           <div className="slot-meta">
                             <span>📋 {formatNote(family.instructions || 'Leave at door')}</span>
                             {family.contact && <span>📞 {family.contact}</span>}
@@ -1202,7 +1197,7 @@ export default function AdminPage() {
                                 Family #{family.family_id}
                                 <span className={groupBadge(family.group, family).className}>{groupBadge(family.group, family).text}</span>
                               </div>
-                              <div className="slot-address">{formatAddress(family.address)}</div>
+                              <div className="slot-address">{formatAddress(family.address, family.unit)}</div>
                               <div className="slot-meta">
                                 <span>📋 {formatNote(family.instructions || 'Leave at door')}</span>
                               </div>
@@ -1480,6 +1475,21 @@ export default function AdminPage() {
                 </div>
 
                 <div className="form-group">
+                  <label>Unit / Apt # (optional)</label>
+                  <input
+                    type="text"
+                    name="unit"
+                    value={formData.unit}
+                    onChange={handleInputChange}
+                    placeholder="e.g. 127 — leave empty if none"
+                    autoComplete="off"
+                  />
+                  <small style={{ display: 'block', marginTop: '4px', color: '#666' }}>
+                    Keep the street address above clean for autocomplete; put the apartment/unit number here.
+                  </small>
+                </div>
+
+                <div className="form-group">
                   <label>People in Family</label>
                   <input
                     type="number"
@@ -1626,7 +1636,7 @@ export default function AdminPage() {
                           {family.active ? 'Active' : 'Inactive'}
                         </span>
                       </div>
-                      <div className="family-address">{formatAddress(family.address)}</div>
+                      <div className="family-address">{formatAddress(family.address, family.unit)}</div>
                       <div className="family-details">
                         <span>👥 {family.people_count || '-'} people</span>
                         {family.contact && <span>📞 {family.contact}</span>}

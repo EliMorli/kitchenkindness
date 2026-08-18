@@ -98,6 +98,7 @@ export default function Home() {
           instructions: f.instructions || 'Leave at door',
           contact: f.contact || '',
           delivery_days: f.delivery_days || ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'],
+          unit: f.unit || '',
           latitude: f.latitude ?? null,
           longitude: f.longitude ?? null
         }));
@@ -445,7 +446,7 @@ export default function Home() {
                         Family #{family.id}
                         <span className={groupBadge(family.group, family).className}>{groupBadge(family.group, family).text}</span>
                       </div>
-                      <div className="slot-address">{formatAddress(family.address)}</div>
+                      <div className="slot-address">{formatAddress(family.address, family.unit)}</div>
                       <div className="slot-meta">
                         <span>📋 {formatNote(family.instructions)}</span>
                         {family.contact && <span>📞 {family.contact}</span>}
@@ -549,7 +550,7 @@ export default function Home() {
                             Family #{family.id}
                             <span className={groupBadge(family.group, family).className}>{groupBadge(family.group, family).text}</span>
                           </div>
-                          <div className="slot-address">{formatAddress(family.address)}</div>
+                          <div className="slot-address">{formatAddress(family.address, family.unit)}</div>
                           <div className="slot-meta">
                             <span>📋 {formatNote(family.instructions)}</span>
                           </div>
@@ -625,7 +626,7 @@ export default function Home() {
               </div>
               <div className="modal-info-row">
                 <span className="modal-info-label">Address</span>
-                <span className="modal-info-value">{formatAddress(selectedFamily.address)}</span>
+                <span className="modal-info-value">{formatAddress(selectedFamily.address, selectedFamily.unit)}</span>
               </div>
               <div className="modal-info-row">
                 <span className="modal-info-label">Instructions</span>
@@ -688,7 +689,7 @@ export default function Home() {
               </div>
               <div className="modal-info-row">
                 <span className="modal-info-label">Address</span>
-                <span className="modal-info-value">{formatAddress(selectedFamily.address)}</span>
+                <span className="modal-info-value">{formatAddress(selectedFamily.address, selectedFamily.unit)}</span>
               </div>
               <div className="modal-info-row">
                 <span className="modal-info-label">Instructions</span>

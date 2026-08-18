@@ -151,7 +151,7 @@ export default function KitchenPage() {
                   <td className="col-notes">
                     {[family.instructions, family.notes].filter(Boolean).map(formatNote).join(' — ') || '-'}
                   </td>
-                  <td className="col-address">{formatAddress(family.address)}</td>
+                  <td className="col-address">{formatAddress(family.address, family.unit)}</td>
                 </tr>
               ))
             )}
