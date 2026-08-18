@@ -403,8 +403,11 @@ export default function AdminPage() {
 
   const handleBackfillCoordinates = async () => {
     if (!supabase) return;
-    if (!GOOGLE_MAPS_KEY) {
-      alert('No Google Maps key configured — set NEXT_PUBLIC_GOOGLE_MAPS_API_KEY.');
+    // Use the Maps JS API Geocoder, not the REST endpoint: Google rejects
+    // REST geocoding calls from keys with website/referrer restrictions,
+    // while the JS Geocoder honors them.
+    if (!window.google?.maps?.Geocoder) {
+      alert('Google Maps has not loaded on this page — check the API key, then reload and try again.');
       return;
     }
     const missing = families.filter(
@@ -414,48 +417,49 @@ export default function AdminPage() {
       alert('All families already have coordinates.');
       return;
     }
-    if (!confirm(
-      `Geocode ${missing.length} families via the Google Geocoding API? ` +
-      'Requires Geocoding API enabled on the same key.'
-    )) return;
+    if (!confirm(`Geocode ${missing.length} families via Google Maps?`)) return;
 
+    const geocoder = new window.google.maps.Geocoder();
     setBackfillProgress({ done: 0, total: missing.length, current: null, failed: [] });
     const failed = [];
     for (let i = 0; i < missing.length; i++) {
       const f = missing[i];
       setBackfillProgress({ done: i, total: missing.length, current: f.family_id, failed });
       try {
-        const url =
-          'https://maps.googleapis.com/maps/api/geocode/json?address=' +
-          encodeURIComponent(f.address) + '&key=' + GOOGLE_MAPS_KEY;
-        const res = await fetch(url);
-        const data = await res.json();
-        if (data.status !== 'OK' || !data.results?.[0]?.geometry?.location) {
-          console.warn(`Geocode failed for #${f.family_id} (${f.address}): ${data.status}`);
-          failed.push({ family_id: f.family_id, status: data.status });
+        const { results } = await geocoder.geocode({ address: f.address });
+        const loc = results?.[0]?.geometry?.location;
+        if (!loc) {
+          console.warn(`Geocode returned no result for #${f.family_id} (${f.address})`);
+          failed.push({ family_id: f.family_id, status: 'NO_RESULT' });
           continue;
         }
-        const { lat, lng } = data.results[0].geometry.location;
         const { error } = await supabase
           .from('families')
-          .update({ latitude: lat, longitude: lng })
+          .update({ latitude: loc.lat(), longitude: loc.lng() })
           .eq('id', f.id);
         if (error) {
           console.warn(`Save failed for #${f.family_id}: ${error.message}`);
           failed.push({ family_id: f.family_id, status: 'SAVE_ERROR' });
         }
       } catch (e) {
-        console.warn(`Geocode threw for #${f.family_id}:`, e);
-        failed.push({ family_id: f.family_id, status: 'FETCH_ERROR' });
+        // The JS Geocoder rejects with the status in e.code (e.g. ZERO_RESULTS
+        // for a non-address like "pickup", OVER_QUERY_LIMIT when throttled).
+        const status = e?.code || String(e);
+        console.warn(`Geocode failed for #${f.family_id} (${f.address}): ${status}`);
+        failed.push({ family_id: f.family_id, status });
+        if (status === 'OVER_QUERY_LIMIT') {
+          await new Promise(r => setTimeout(r, 2000));
+        }
       }
       await new Promise(r => setTimeout(r, 250));
     }
     setBackfillProgress({ done: missing.length, total: missing.length, current: null, failed });
     await loadFamilies();
     if (failed.length) {
+      const failedIds = failed.map(x => `#${x.family_id} (${x.status})`).join(', ');
       alert(
         `Backfill complete: ${missing.length - failed.length} succeeded, ` +
-        `${failed.length} failed. See console for details.`
+        `${failed.length} failed:\n\n${failedIds}\n\nFailed families stay "Ungrouped" — usually the address isn't a real street address.`
       );
     } else {
       alert(`Backfill complete: geocoded ${missing.length} families.`);
