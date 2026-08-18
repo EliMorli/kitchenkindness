@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import Script from 'next/script';
 import { supabase } from '../../lib/supabase';
 import { computeGroups, groupBadge, isPickup, haversineKm } from '../../lib/groups';
+import { formatAddress, formatNote } from '../../lib/format';
 
 const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD;
 const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
@@ -970,7 +971,7 @@ export default function AdminPage() {
                     <div key={idx} className="unfilled-item">
                       <span className="unfilled-date">{slot.dayName.slice(0, 3)}, {slot.date.toLocaleDateString()}</span>
                       <span className="unfilled-family">Family #{slot.family.family_id}</span>
-                      <span className="unfilled-address">{slot.family.address}</span>
+                      <span className="unfilled-address">{formatAddress(slot.family.address)}</span>
                     </div>
                   ))}
                   {stats.upcomingUnfilled.length > 10 && (
@@ -1122,9 +1123,9 @@ export default function AdminPage() {
                             Family #{family.family_id}
                             <span className={groupBadge(family.group, family).className}>{groupBadge(family.group, family).text}</span>
                           </div>
-                          <div className="slot-address">{family.address}</div>
+                          <div className="slot-address">{formatAddress(family.address)}</div>
                           <div className="slot-meta">
-                            <span>📋 {family.instructions || 'Leave at door'}</span>
+                            <span>📋 {formatNote(family.instructions || 'Leave at door')}</span>
                             {family.contact && <span>📞 {family.contact}</span>}
                           </div>
                         </div>
@@ -1201,9 +1202,9 @@ export default function AdminPage() {
                                 Family #{family.family_id}
                                 <span className={groupBadge(family.group, family).className}>{groupBadge(family.group, family).text}</span>
                               </div>
-                              <div className="slot-address">{family.address}</div>
+                              <div className="slot-address">{formatAddress(family.address)}</div>
                               <div className="slot-meta">
-                                <span>📋 {family.instructions || 'Leave at door'}</span>
+                                <span>📋 {formatNote(family.instructions || 'Leave at door')}</span>
                               </div>
                               {assignment ? (
                                 <div className="slot-volunteer">
@@ -1625,7 +1626,7 @@ export default function AdminPage() {
                           {family.active ? 'Active' : 'Inactive'}
                         </span>
                       </div>
-                      <div className="family-address">{family.address}</div>
+                      <div className="family-address">{formatAddress(family.address)}</div>
                       <div className="family-details">
                         <span>👥 {family.people_count || '-'} people</span>
                         {family.contact && <span>📞 {family.contact}</span>}

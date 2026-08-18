@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { computeGroups, groupBadge } from '../lib/groups';
+import { formatAddress, formatNote } from '../lib/format';
 
 // Families are loaded from Supabase - empty fallback if database is unavailable
 const fallbackFamilies = [];
@@ -444,9 +445,9 @@ export default function Home() {
                         Family #{family.id}
                         <span className={groupBadge(family.group, family).className}>{groupBadge(family.group, family).text}</span>
                       </div>
-                      <div className="slot-address">{family.address}</div>
+                      <div className="slot-address">{formatAddress(family.address)}</div>
                       <div className="slot-meta">
-                        <span>📋 {family.instructions}</span>
+                        <span>📋 {formatNote(family.instructions)}</span>
                         {family.contact && <span>📞 {family.contact}</span>}
                       </div>
                     </div>
@@ -548,9 +549,9 @@ export default function Home() {
                             Family #{family.id}
                             <span className={groupBadge(family.group, family).className}>{groupBadge(family.group, family).text}</span>
                           </div>
-                          <div className="slot-address">{family.address}</div>
+                          <div className="slot-address">{formatAddress(family.address)}</div>
                           <div className="slot-meta">
-                            <span>📋 {family.instructions}</span>
+                            <span>📋 {formatNote(family.instructions)}</span>
                           </div>
                           {assignment ? (
                             <div className="slot-volunteer">
@@ -624,11 +625,11 @@ export default function Home() {
               </div>
               <div className="modal-info-row">
                 <span className="modal-info-label">Address</span>
-                <span className="modal-info-value">{selectedFamily.address}</span>
+                <span className="modal-info-value">{formatAddress(selectedFamily.address)}</span>
               </div>
               <div className="modal-info-row">
                 <span className="modal-info-label">Instructions</span>
-                <span className="modal-info-value">{selectedFamily.instructions}</span>
+                <span className="modal-info-value">{formatNote(selectedFamily.instructions)}</span>
               </div>
               {selectedFamily.contact && (
                 <div className="modal-info-row">
@@ -687,11 +688,11 @@ export default function Home() {
               </div>
               <div className="modal-info-row">
                 <span className="modal-info-label">Address</span>
-                <span className="modal-info-value">{selectedFamily.address}</span>
+                <span className="modal-info-value">{formatAddress(selectedFamily.address)}</span>
               </div>
               <div className="modal-info-row">
                 <span className="modal-info-label">Instructions</span>
-                <span className="modal-info-value">{selectedFamily.instructions}</span>
+                <span className="modal-info-value">{formatNote(selectedFamily.instructions)}</span>
               </div>
               {selectedFamily.contact && (
                 <div className="modal-info-row">
