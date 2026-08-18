@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
+import { computeGroups, groupBadgeClass, groupLabel } from '../../lib/groups';
 
 const DELIVERY_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'];
 const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -39,11 +40,20 @@ export default function KitchenPage() {
   };
 
   const getFamiliesForDay = () => {
-    return families.filter(f => {
+    const list = families.filter(f => {
       const inDays = !f.delivery_days || f.delivery_days.includes(selectedDay);
       const shabbatOnThursday = selectedDay === 'Thursday' && f.saturday_meals;
       return inDays || shabbatOnThursday;
     });
+    const groups = computeGroups(list);
+    return list
+      .map(f => ({ ...f, group: groups.get(f.family_id) ?? null }))
+      .sort((a, b) => {
+        const ag = a.group ?? Infinity;
+        const bg = b.group ?? Infinity;
+        if (ag !== bg) return ag - bg;
+        return Number(a.family_id) - Number(b.family_id);
+      });
   };
 
   const todayStr = dayNames[new Date().getDay()];
@@ -101,6 +111,7 @@ export default function KitchenPage() {
         <table className="kitchen-table">
           <thead>
             <tr>
+              <th className="col-group">Group</th>
               <th className="col-id">#</th>
               {isThursday ? (
                 <>
@@ -117,13 +128,16 @@ export default function KitchenPage() {
           <tbody>
             {filteredFamilies.length === 0 ? (
               <tr>
-                <td colSpan={isThursday ? 5 : 4} className="kitchen-empty">
+                <td colSpan={isThursday ? 6 : 5} className="kitchen-empty">
                   No families scheduled for {selectedDay}
                 </td>
               </tr>
             ) : (
               filteredFamilies.map((family, idx) => (
                 <tr key={family.id} className={idx % 2 === 0 ? 'row-even' : 'row-odd'}>
+                  <td className="col-group">
+                    <span className={groupBadgeClass(family.group)}>{groupLabel(family.group)}</span>
+                  </td>
                   <td className="col-id">{family.family_id}</td>
                   {isThursday ? (
                     <>
@@ -144,6 +158,7 @@ export default function KitchenPage() {
           {filteredFamilies.length > 0 && (
             <tfoot>
               <tr>
+                <td className="col-group"></td>
                 <td className="col-id"><strong>Total</strong></td>
                 {isThursday ? (
                   <>

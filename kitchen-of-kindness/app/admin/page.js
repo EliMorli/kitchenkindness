@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import Script from 'next/script';
 import { supabase } from '../../lib/supabase';
+import { computeGroups, groupBadgeClass, groupLabel } from '../../lib/groups';
 
 const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD;
 const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
@@ -46,6 +47,21 @@ const getInitialWeekStart = () => {
   return sunday;
 };
 
+// Install the Google Maps auth-failure handler at module scope so it exists
+// before Google's script executes. Without this, an expired/invalid key
+// triggers a modal alert that blocks all page interaction (including typing
+// the address). The handler flips a window flag and dispatches a DOM event
+// the component can subscribe to for its own state update.
+if (typeof window !== 'undefined' && !window.__gmAuthHandlerInstalled) {
+  window.__gmAuthHandlerInstalled = true;
+  window.__gmAuthFailed = false;
+  window.gm_authFailure = () => {
+    console.warn('Google Maps API auth failed — falling back to manual address entry.');
+    window.__gmAuthFailed = true;
+    window.dispatchEvent(new CustomEvent('gm-auth-failed'));
+  };
+}
+
 export default function AdminPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [passwordInput, setPasswordInput] = useState('');
@@ -64,8 +80,10 @@ export default function AdminPage() {
   const [signupsDate, setSignupsDate] = useState(getInitialDeliveryDate);
   const [signupsWeekStart, setSignupsWeekStart] = useState(getInitialWeekStart);
   const [googleReady, setGoogleReady] = useState(false);
+  const [googleFailed, setGoogleFailed] = useState(false);
   const addressInputRef = useRef(null);
   const [copiedFlash, setCopiedFlash] = useState(false);
+  const [backfillProgress, setBackfillProgress] = useState(null);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -76,7 +94,9 @@ export default function AdminPage() {
     delivery_days: [...ALL_DAYS],
     notes: '',
     saturday_meals: false,
-    active: true
+    active: true,
+    latitude: null,
+    longitude: null
   });
 
   useEffect(() => {
@@ -95,22 +115,59 @@ export default function AdminPage() {
   }, [isAuthenticated]);
 
   useEffect(() => {
+    // The module-scope handler above installs window.gm_authFailure before
+    // any React lifecycle runs. Here we sync that flag into component state
+    // — both catching a failure that already happened and subscribing for
+    // future ones.
+    if (typeof window !== 'undefined' && window.__gmAuthFailed) {
+      setGoogleFailed(true);
+      return;
+    }
+    const handler = () => setGoogleFailed(true);
+    window.addEventListener('gm-auth-failed', handler);
+    return () => window.removeEventListener('gm-auth-failed', handler);
+  }, []);
+
+  useEffect(() => {
     if (activeTab !== 'families') return;
     if (!googleReady) return;
+    if (googleFailed) return;
     if (!addressInputRef.current) return;
     if (!window.google?.maps?.places?.Autocomplete) return;
+
+    // Probe the Places API before wiring up the widget. A key can load the
+    // base Maps JS API but still be blocked from calling Places specifically
+    // (ApiTargetBlockedMapError → REQUEST_DENIED status). That doesn't fire
+    // gm_authFailure, so we detect it here and fall back to manual entry
+    // instead of letting the widget spam errors on every keystroke.
+    const probe = new window.google.maps.places.AutocompleteService();
+    probe.getPlacePredictions({ input: '1' }, (_predictions, status) => {
+      const S = window.google.maps.places.PlacesServiceStatus;
+      if (status === S.REQUEST_DENIED) {
+        console.warn('Google Places API rejected the request — falling back to manual address entry.');
+        setGoogleFailed(true);
+      }
+    });
 
     const ac = new window.google.maps.places.Autocomplete(addressInputRef.current, {
       types: ['address'],
       componentRestrictions: { country: 'us' },
-      fields: ['formatted_address']
+      fields: ['formatted_address', 'geometry']
     });
 
     const listener = ac.addListener('place_changed', () => {
       const place = ac.getPlace();
-      if (place?.formatted_address) {
-        setFormData(prev => ({ ...prev, address: place.formatted_address }));
-      }
+      if (!place) return;
+      setFormData(prev => {
+        const next = { ...prev };
+        if (place.formatted_address) next.address = place.formatted_address;
+        const loc = place.geometry?.location;
+        if (loc && typeof loc.lat === 'function' && typeof loc.lng === 'function') {
+          next.latitude = loc.lat();
+          next.longitude = loc.lng();
+        }
+        return next;
+      });
     });
 
     return () => {
@@ -121,7 +178,7 @@ export default function AdminPage() {
         }
       }
     };
-  }, [activeTab, googleReady]);
+  }, [activeTab, googleReady, googleFailed]);
 
   const loadFamilies = async () => {
     if (!supabase) return;
@@ -179,10 +236,20 @@ export default function AdminPage() {
 
   const handleInputChange = (e) => {
     const { name, value, type, checked } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: type === 'checkbox' ? checked : type === 'number' ? parseInt(value) || 0 : value
-    }));
+    setFormData(prev => {
+      const next = {
+        ...prev,
+        [name]: type === 'checkbox' ? checked : type === 'number' ? parseInt(value) || 0 : value
+      };
+      // Any manual edit to the address invalidates the last Places-derived
+      // coords. If the user then picks a suggestion, place_changed repopulates
+      // them; otherwise the family stays "Ungrouped" until Backfill runs.
+      if (name === 'address') {
+        next.latitude = null;
+        next.longitude = null;
+      }
+      return next;
+    });
   };
 
   const handleDayToggle = (day) => {
@@ -209,7 +276,9 @@ export default function AdminPage() {
       delivery_days: [...ALL_DAYS],
       notes: '',
       saturday_meals: false,
-      active: true
+      active: true,
+      latitude: null,
+      longitude: null
     });
     setEditingId(null);
   };
@@ -235,7 +304,9 @@ export default function AdminPage() {
             delivery_days: formData.delivery_days,
             notes: formData.notes.trim(),
             saturday_meals: formData.saturday_meals,
-            active: formData.active
+            active: formData.active,
+            latitude: formData.latitude,
+            longitude: formData.longitude
           })
           .eq('id', editingId);
 
@@ -252,7 +323,9 @@ export default function AdminPage() {
             delivery_days: formData.delivery_days,
             notes: formData.notes.trim(),
             saturday_meals: formData.saturday_meals,
-            active: formData.active
+            active: formData.active,
+            latitude: formData.latitude,
+            longitude: formData.longitude
           });
 
         if (error) throw error;
@@ -276,7 +349,9 @@ export default function AdminPage() {
       delivery_days: family.delivery_days || [...ALL_DAYS],
       notes: family.notes || '',
       saturday_meals: family.saturday_meals || false,
-      active: family.active !== false
+      active: family.active !== false,
+      latitude: family.latitude ?? null,
+      longitude: family.longitude ?? null
     });
     setEditingId(family.id);
     setActiveTab('families');
@@ -324,6 +399,68 @@ export default function AdminPage() {
       console.error('Error cancelling assignment:', error);
       alert('Error cancelling. Please try again.');
     }
+  };
+
+  const handleBackfillCoordinates = async () => {
+    if (!supabase) return;
+    if (!GOOGLE_MAPS_KEY) {
+      alert('No Google Maps key configured — set NEXT_PUBLIC_GOOGLE_MAPS_API_KEY.');
+      return;
+    }
+    const missing = families.filter(
+      f => f.latitude == null || f.longitude == null
+    );
+    if (missing.length === 0) {
+      alert('All families already have coordinates.');
+      return;
+    }
+    if (!confirm(
+      `Geocode ${missing.length} families via the Google Geocoding API? ` +
+      'Requires Geocoding API enabled on the same key.'
+    )) return;
+
+    setBackfillProgress({ done: 0, total: missing.length, current: null, failed: [] });
+    const failed = [];
+    for (let i = 0; i < missing.length; i++) {
+      const f = missing[i];
+      setBackfillProgress({ done: i, total: missing.length, current: f.family_id, failed });
+      try {
+        const url =
+          'https://maps.googleapis.com/maps/api/geocode/json?address=' +
+          encodeURIComponent(f.address) + '&key=' + GOOGLE_MAPS_KEY;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data.status !== 'OK' || !data.results?.[0]?.geometry?.location) {
+          console.warn(`Geocode failed for #${f.family_id} (${f.address}): ${data.status}`);
+          failed.push({ family_id: f.family_id, status: data.status });
+          continue;
+        }
+        const { lat, lng } = data.results[0].geometry.location;
+        const { error } = await supabase
+          .from('families')
+          .update({ latitude: lat, longitude: lng })
+          .eq('id', f.id);
+        if (error) {
+          console.warn(`Save failed for #${f.family_id}: ${error.message}`);
+          failed.push({ family_id: f.family_id, status: 'SAVE_ERROR' });
+        }
+      } catch (e) {
+        console.warn(`Geocode threw for #${f.family_id}:`, e);
+        failed.push({ family_id: f.family_id, status: 'FETCH_ERROR' });
+      }
+      await new Promise(r => setTimeout(r, 250));
+    }
+    setBackfillProgress({ done: missing.length, total: missing.length, current: null, failed });
+    await loadFamilies();
+    if (failed.length) {
+      alert(
+        `Backfill complete: ${missing.length - failed.length} succeeded, ` +
+        `${failed.length} failed. See console for details.`
+      );
+    } else {
+      alert(`Backfill complete: geocoded ${missing.length} families.`);
+    }
+    setTimeout(() => setBackfillProgress(null), 4000);
   };
 
   const handleToggleActive = async (family) => {
@@ -484,9 +621,18 @@ export default function AdminPage() {
   // Sign-ups tab helpers (mirror of volunteer view)
   const getSignupFamiliesForDate = (date) => {
     const dayName = dayNames[date.getDay()];
-    return families
+    const list = families
       .filter(f => f.active !== false)
       .filter(f => !f.delivery_days || f.delivery_days.includes(dayName));
+    const groups = computeGroups(list);
+    return list
+      .map(f => ({ ...f, group: groups.get(f.family_id) ?? null }))
+      .sort((a, b) => {
+        const ag = a.group ?? Infinity;
+        const bg = b.group ?? Infinity;
+        if (ag !== bg) return ag - bg;
+        return Number(a.family_id) - Number(b.family_id);
+      });
   };
 
   const getSignupAssignmentForSlot = (date, familyId) => {
@@ -592,11 +738,15 @@ export default function AdminPage() {
 
   return (
     <div className="admin-container">
-      {GOOGLE_MAPS_KEY && (
+      {GOOGLE_MAPS_KEY && !googleFailed && (
         <Script
           src={`https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_KEY}&libraries=places&v=weekly&loading=async`}
           strategy="afterInteractive"
           onLoad={() => setGoogleReady(true)}
+          onError={() => {
+            console.warn('Google Maps API failed to load — falling back to manual address entry.');
+            setGoogleFailed(true);
+          }}
         />
       )}
       <header className="admin-header">
@@ -840,7 +990,10 @@ export default function AdminPage() {
                     return (
                       <div key={family.id} className={`slot slot-large ${slotClass}`}>
                         <div className="slot-main">
-                          <div className="slot-family">Family #{family.family_id}</div>
+                          <div className="slot-family">
+                            Family #{family.family_id}
+                            <span className={groupBadgeClass(family.group)}>Group {groupLabel(family.group)}</span>
+                          </div>
                           <div className="slot-address">{family.address}</div>
                           <div className="slot-meta">
                             <span>📋 {family.instructions || 'Leave at door'}</span>
@@ -916,7 +1069,10 @@ export default function AdminPage() {
                             : 'slot-open';
                           return (
                             <div key={family.id} className={`slot ${slotClass}`}>
-                              <div className="slot-family">Family #{family.family_id}</div>
+                              <div className="slot-family">
+                                Family #{family.family_id}
+                                <span className={groupBadgeClass(family.group)}>Group {groupLabel(family.group)}</span>
+                              </div>
                               <div className="slot-address">{family.address}</div>
                               <div className="slot-meta">
                                 <span>📋 {family.instructions || 'Leave at door'}</span>
@@ -1154,18 +1310,44 @@ export default function AdminPage() {
 
               <form onSubmit={handleSubmit} className="admin-form">
                 <div className="form-group">
-                  <label>Address *</label>
+                  <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                    <span>Address *</span>
+                    {GOOGLE_MAPS_KEY && !googleFailed && (
+                      <button
+                        type="button"
+                        onClick={() => setGoogleFailed(true)}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: '#0066cc',
+                          cursor: 'pointer',
+                          textDecoration: 'underline',
+                          fontSize: 12,
+                          padding: 0
+                        }}
+                      >
+                        ✎ Type manually (disable autocomplete)
+                      </button>
+                    )}
+                  </label>
                   <input
                     ref={addressInputRef}
                     type="text"
                     name="address"
                     value={formData.address}
                     onChange={handleInputChange}
-                    onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}
-                    placeholder={GOOGLE_MAPS_KEY ? 'Start typing an address…' : '123 Main St, City, CA 91234'}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && GOOGLE_MAPS_KEY && !googleFailed) e.preventDefault();
+                    }}
+                    placeholder={GOOGLE_MAPS_KEY && !googleFailed ? 'Start typing an address…' : '123 Main St, City, CA 91234'}
                     autoComplete="off"
                     required
                   />
+                  {googleFailed && (
+                    <small style={{ display: 'block', marginTop: '4px', color: '#a05a00' }}>
+                      ⚠️ Address autocomplete off — type the address manually.
+                    </small>
+                  )}
                 </div>
 
                 <div className="form-group">
@@ -1271,7 +1453,22 @@ export default function AdminPage() {
 
             {/* Families List */}
             <section className="admin-list-section">
-              <h2>All Families ({families.length})</h2>
+              <div className="section-header">
+                <h2>All Families ({families.length})</h2>
+                <button
+                  type="button"
+                  className="today-btn"
+                  onClick={handleBackfillCoordinates}
+                  disabled={backfillProgress !== null && backfillProgress.done < backfillProgress.total}
+                  title="Geocode families that don't yet have latitude/longitude so they can be grouped."
+                >
+                  {backfillProgress
+                    ? backfillProgress.done < backfillProgress.total
+                      ? `⏳ Geocoding ${backfillProgress.done}/${backfillProgress.total}${backfillProgress.current ? ` — #${backfillProgress.current}` : ''}`
+                      : `✓ Done (${backfillProgress.total - backfillProgress.failed.length}/${backfillProgress.total})`
+                    : '🌐 Backfill coordinates'}
+                </button>
+              </div>
 
               {loading ? (
                 <p>Loading...</p>

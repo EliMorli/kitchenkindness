@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { supabase } from '../../../lib/supabase';
+import { computeGroups, groupLabel } from '../../../lib/groups';
 
 // Labels: JADENS 4 in × 6 in thermal shipping labels (portrait).
 // Printer paper-size driver setting should match (any standard 4×6 thermal printer).
@@ -61,14 +62,27 @@ function PrintLabelsContent() {
   if (date) {
     const dayName = dayNames[date.getDay()];
     const isThursday = dayName === 'Thursday';
-    families.forEach(f => {
+    const familiesForDay = families.filter(f => {
       const onThisDay = !f.delivery_days || f.delivery_days.includes(dayName);
-      if (onThisDay) {
-        labels.push({ family: f, kind: 'regular' });
-      }
-      if (isThursday && f.saturday_meals) {
-        labels.push({ family: f, kind: 'saturday' });
-      }
+      const shabbatOnThursday = isThursday && f.saturday_meals;
+      return onThisDay || shabbatOnThursday;
+    });
+    const groups = computeGroups(familiesForDay);
+    familiesForDay.forEach(f => {
+      const g = groups.get(f.family_id) ?? null;
+      const onThisDay = !f.delivery_days || f.delivery_days.includes(dayName);
+      if (onThisDay) labels.push({ family: f, kind: 'regular', group: g });
+      if (isThursday && f.saturday_meals) labels.push({ family: f, kind: 'saturday', group: g });
+    });
+    // Sort so same-group labels print consecutively; regular before its Saturday twin.
+    labels.sort((a, b) => {
+      const ag = a.group ?? Infinity;
+      const bg = b.group ?? Infinity;
+      if (ag !== bg) return ag - bg;
+      const aid = Number(a.family.family_id);
+      const bid = Number(b.family.family_id);
+      if (aid !== bid) return aid - bid;
+      return a.kind === 'saturday' ? 1 : -1;
     });
   }
 
@@ -232,6 +246,7 @@ function PrintLabelsContent() {
               className="label-page"
             >
               {isSat && <div className="sat-badge">SAT</div>}
+              <div className="label-group-badge">Group {groupLabel(label.group)}</div>
               <div className="label-id">#{f.family_id}</div>
               <div className="label-meals">Meals: {f.people_count || '?'}</div>
               <div className="label-address">{f.address}</div>
