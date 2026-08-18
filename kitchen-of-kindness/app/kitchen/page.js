@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
 import { computeGroups, groupBadge } from '../../lib/groups';
+import { formatAddress, formatNote } from '../../lib/format';
 
 const DELIVERY_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'];
 const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -148,9 +149,9 @@ export default function KitchenPage() {
                     <td className="col-people">{family.people_count || '-'}</td>
                   )}
                   <td className="col-notes">
-                    {[family.instructions, family.notes].filter(Boolean).join(' — ') || '-'}
+                    {[family.instructions, family.notes].filter(Boolean).map(formatNote).join(' — ') || '-'}
                   </td>
-                  <td className="col-address">{family.address}</td>
+                  <td className="col-address">{formatAddress(family.address)}</td>
                 </tr>
               ))
             )}

@@ -4,6 +4,7 @@ import { Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { supabase } from '../../../lib/supabase';
 import { computeGroups, groupBadge } from '../../../lib/groups';
+import { formatAddress, formatNote } from '../../../lib/format';
 
 // Labels: JADENS 4 in × 6 in thermal shipping labels (portrait).
 // Printer paper-size driver setting should match (any standard 4×6 thermal printer).
@@ -238,7 +239,7 @@ function PrintLabelsContent() {
         labels.map((label, i) => {
           const f = label.family;
           const isSat = label.kind === 'saturday';
-          const notes = [f.instructions, f.notes].filter(Boolean).join(' — ');
+          const notes = [f.instructions, f.notes].filter(Boolean).map(formatNote).join(' — ');
           return (
             <div
               key={`${f.id}-${label.kind}`}
@@ -249,7 +250,7 @@ function PrintLabelsContent() {
               <div className="label-group-badge">{groupBadge(label.group, f).text}</div>
               <div className="label-id">#{f.family_id}</div>
               <div className="label-meals">Meals: {f.people_count || '?'}</div>
-              <div className="label-address">{f.address}</div>
+              <div className="label-address">{formatAddress(f.address)}</div>
               {f.contact && <div className="label-phone">📞 {f.contact}</div>}
               {notes && <div className="label-notes">📋 {notes}</div>}
             </div>
