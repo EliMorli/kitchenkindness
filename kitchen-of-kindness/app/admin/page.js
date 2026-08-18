@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import Script from 'next/script';
 import { supabase } from '../../lib/supabase';
-import { computeGroups, groupBadge } from '../../lib/groups';
+import { computeGroups, groupBadge, isPickup } from '../../lib/groups';
 
 const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD;
 const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
@@ -292,12 +292,46 @@ export default function AdminPage() {
 
     if (!supabase) return;
     setSaving(true);
+
+    // If the address was typed by hand (no Places pick → no coords) and isn't
+    // a pickup entry, geocode it now: offer the verified formatted address and
+    // capture lat/lng so the family lands in a delivery group. Declining (or a
+    // failed lookup) saves exactly what was typed, without coordinates.
+    let address = formData.address.trim();
+    let latitude = formData.latitude;
+    let longitude = formData.longitude;
+    if (latitude == null && !isPickup({ address }) && window.google?.maps?.Geocoder) {
+      try {
+        const geocoder = new window.google.maps.Geocoder();
+        const { results } = await geocoder.geocode({
+          address,
+          componentRestrictions: { country: 'US' }
+        });
+        const top = results?.[0];
+        if (top?.geometry?.location) {
+          if (confirm(
+            `Verified address found:\n\n${top.formatted_address}\n\n` +
+            'OK = save the verified address (family gets a delivery group).\n' +
+            'Cancel = keep exactly what you typed (no group).'
+          )) {
+            address = top.formatted_address;
+            latitude = top.geometry.location.lat();
+            longitude = top.geometry.location.lng();
+          }
+        } else {
+          console.warn('Geocode found no match for typed address:', address);
+        }
+      } catch (err) {
+        console.warn('Geocode failed for typed address:', address, err?.code || err);
+      }
+    }
+
     try {
       if (editingId) {
         const { error } = await supabase
           .from('families')
           .update({
-            address: formData.address.trim(),
+            address,
             instructions: formData.instructions.trim(),
             contact: formData.contact.trim(),
             people_count: formData.people_count,
@@ -305,8 +339,8 @@ export default function AdminPage() {
             notes: formData.notes.trim(),
             saturday_meals: formData.saturday_meals,
             active: formData.active,
-            latitude: formData.latitude,
-            longitude: formData.longitude
+            latitude,
+            longitude
           })
           .eq('id', editingId);
 
@@ -316,7 +350,7 @@ export default function AdminPage() {
           .from('families')
           .insert({
             family_id: getNextFamilyId(),
-            address: formData.address.trim(),
+            address,
             instructions: formData.instructions.trim(),
             contact: formData.contact.trim(),
             people_count: formData.people_count,
@@ -324,8 +358,8 @@ export default function AdminPage() {
             notes: formData.notes.trim(),
             saturday_meals: formData.saturday_meals,
             active: formData.active,
-            latitude: formData.latitude,
-            longitude: formData.longitude
+            latitude,
+            longitude
           });
 
         if (error) throw error;
