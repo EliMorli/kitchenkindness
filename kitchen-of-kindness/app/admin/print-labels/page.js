@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { supabase } from '../../../lib/supabase';
-import { computeGroups, groupLabel } from '../../../lib/groups';
+import { computeGroups, groupBadge } from '../../../lib/groups';
 
 // Labels: JADENS 4 in × 6 in thermal shipping labels (portrait).
 // Printer paper-size driver setting should match (any standard 4×6 thermal printer).
@@ -246,7 +246,7 @@ function PrintLabelsContent() {
               className="label-page"
             >
               {isSat && <div className="sat-badge">SAT</div>}
-              <div className="label-group-badge">Group {groupLabel(label.group)}</div>
+              <div className="label-group-badge">{groupBadge(label.group, f).text}</div>
               <div className="label-id">#{f.family_id}</div>
               <div className="label-meals">Meals: {f.people_count || '?'}</div>
               <div className="label-address">{f.address}</div>

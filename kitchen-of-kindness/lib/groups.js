@@ -66,3 +66,19 @@ export function groupBadgeClass(group) {
 export function groupLabel(group) {
   return group == null ? 'U' : String(group);
 }
+
+// Families whose "address" is a pickup note (they collect bags at the
+// kitchen) never geocode and shouldn't read as a data problem.
+export const isPickup = f => /pick\s*up|picup/i.test(f?.address || '');
+
+// One-stop badge descriptor: {className, text, short} for any surface.
+export function groupBadge(group, family) {
+  if (group != null) {
+    const bucket = ((group - 1) % 10) + 1;
+    return { className: `group-badge group-${bucket}`, text: `Group ${group}`, short: String(group) };
+  }
+  if (isPickup(family)) {
+    return { className: 'group-badge pickup', text: 'Pickup', short: 'Pickup' };
+  }
+  return { className: 'group-badge ungrouped', text: 'Ungrouped', short: 'U' };
+}
