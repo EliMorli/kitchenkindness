@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import Script from 'next/script';
 import { supabase } from '../../lib/supabase';
-import { computeGroups, groupBadge, isPickup } from '../../lib/groups';
+import { computeGroups, groupBadge, isPickup, haversineKm } from '../../lib/groups';
 
 const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD;
 const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
@@ -84,6 +84,7 @@ export default function AdminPage() {
   const addressInputRef = useRef(null);
   const [copiedFlash, setCopiedFlash] = useState(false);
   const [backfillProgress, setBackfillProgress] = useState(null);
+  const [formatProgress, setFormatProgress] = useState(null);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -499,6 +500,95 @@ export default function AdminPage() {
       alert(`Backfill complete: geocoded ${missing.length} families.`);
     }
     setTimeout(() => setBackfillProgress(null), 4000);
+  };
+
+  // One-time cleanup: rewrite stored addresses into Google's canonical
+  // format. Unit/apartment numbers from the original text are re-inserted
+  // (Google's formatter drops them), and a row is only rewritten when the
+  // re-geocoded location agrees with the stored coordinates.
+  const handleFormatAddresses = async () => {
+    if (!supabase) return;
+    if (!window.google?.maps?.Geocoder) {
+      alert('Google Maps has not loaded on this page — check the API key, then reload and try again.');
+      return;
+    }
+    const candidates = families.filter(f =>
+      f.latitude != null &&
+      f.longitude != null &&
+      !isPickup(f) &&
+      !/,\s*USA\s*$/.test(f.address || '')
+    );
+    if (candidates.length === 0) {
+      alert('All addresses are already formatted.');
+      return;
+    }
+    if (!confirm(
+      `Reformat ${candidates.length} addresses into full "street, city, CA zip" form? ` +
+      'Apartment/unit numbers are preserved.'
+    )) return;
+
+    const geocoder = new window.google.maps.Geocoder();
+    setFormatProgress({ done: 0, total: candidates.length, current: null, failed: [] });
+    const failed = [];
+    for (let i = 0; i < candidates.length; i++) {
+      const f = candidates[i];
+      setFormatProgress({ done: i, total: candidates.length, current: f.family_id, failed });
+      try {
+        const { results } = await geocoder.geocode({
+          address: f.address,
+          componentRestrictions: { country: 'US' }
+        });
+        const top = results?.[0];
+        const loc = top?.geometry?.location;
+        if (!loc) {
+          failed.push({ family_id: f.family_id, status: 'NO_RESULT' });
+          continue;
+        }
+        // Refuse to rewrite if the fresh geocode lands somewhere else than the
+        // stored coordinates (>300m apart) — the text would change meaning.
+        const distKm = haversineKm(
+          { latitude: f.latitude, longitude: f.longitude },
+          { latitude: loc.lat(), longitude: loc.lng() }
+        );
+        if (distKm > 0.3) {
+          console.warn(`Skipping #${f.family_id}: re-geocode is ${distKm.toFixed(2)}km from stored location`);
+          failed.push({ family_id: f.family_id, status: 'LOCATION_MISMATCH' });
+          continue;
+        }
+        let formatted = top.formatted_address.replace(/,\s*USA\s*$/, '');
+        // Preserve unit/apartment from the original if Google dropped it.
+        const unitMatch = (f.address || '').match(/(?:#|\bapt\.?\s*|\bapartment\s*|\bunit\s*|\bste\.?\s*|\bsuite\s*)\s*([\w-]+)/i);
+        if (unitMatch && !new RegExp(`[#\\b]${unitMatch[1]}\\b`).test(formatted)) {
+          const parts = formatted.split(',');
+          parts[0] = `${parts[0]} #${unitMatch[1]}`;
+          formatted = parts.join(',');
+        }
+        if (formatted !== f.address) {
+          const { error } = await supabase
+            .from('families')
+            .update({ address: formatted })
+            .eq('id', f.id);
+          if (error) {
+            failed.push({ family_id: f.family_id, status: 'SAVE_ERROR' });
+          }
+        }
+      } catch (e) {
+        failed.push({ family_id: f.family_id, status: e?.code || String(e) });
+      }
+      await new Promise(r => setTimeout(r, 250));
+    }
+    setFormatProgress({ done: candidates.length, total: candidates.length, current: null, failed });
+    await loadFamilies();
+    if (failed.length) {
+      const failedIds = failed.map(x => `#${x.family_id} (${x.status})`).join(', ');
+      alert(
+        `Formatting complete: ${candidates.length - failed.length} updated, ` +
+        `${failed.length} skipped:\n\n${failedIds}\n\nSkipped rows keep their current address.`
+      );
+    } else {
+      alert(`Formatting complete: ${candidates.length} addresses updated.`);
+    }
+    setTimeout(() => setFormatProgress(null), 4000);
   };
 
   const handleToggleActive = async (family) => {
@@ -1505,6 +1595,19 @@ export default function AdminPage() {
                       ? `⏳ Geocoding ${backfillProgress.done}/${backfillProgress.total}${backfillProgress.current ? ` — #${backfillProgress.current}` : ''}`
                       : `✓ Done (${backfillProgress.total - backfillProgress.failed.length}/${backfillProgress.total})`
                     : '🌐 Backfill coordinates'}
+                </button>
+                <button
+                  type="button"
+                  className="today-btn"
+                  onClick={handleFormatAddresses}
+                  disabled={formatProgress !== null && formatProgress.done < formatProgress.total}
+                  title="Rewrite existing addresses into full 'street, city, CA zip' form. Unit numbers are preserved."
+                >
+                  {formatProgress
+                    ? formatProgress.done < formatProgress.total
+                      ? `⏳ Formatting ${formatProgress.done}/${formatProgress.total}${formatProgress.current ? ` — #${formatProgress.current}` : ''}`
+                      : `✓ Done (${formatProgress.total - formatProgress.failed.length}/${formatProgress.total})`
+                    : '🧹 Format addresses'}
                 </button>
               </div>
 
