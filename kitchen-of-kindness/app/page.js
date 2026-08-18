@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
-import { computeGroups, groupBadgeClass, groupLabel } from '../lib/groups';
+import { computeGroups, groupBadge } from '../lib/groups';
 
 // Families are loaded from Supabase - empty fallback if database is unavailable
 const fallbackFamilies = [];
@@ -442,7 +442,7 @@ export default function Home() {
                     <div className="slot-main">
                       <div className="slot-family">
                         Family #{family.id}
-                        <span className={groupBadgeClass(family.group)}>Group {groupLabel(family.group)}</span>
+                        <span className={groupBadge(family.group, family).className}>{groupBadge(family.group, family).text}</span>
                       </div>
                       <div className="slot-address">{family.address}</div>
                       <div className="slot-meta">
@@ -546,7 +546,7 @@ export default function Home() {
                         >
                           <div className="slot-family">
                             Family #{family.id}
-                            <span className={groupBadgeClass(family.group)}>Group {groupLabel(family.group)}</span>
+                            <span className={groupBadge(family.group, family).className}>{groupBadge(family.group, family).text}</span>
                           </div>
                           <div className="slot-address">{family.address}</div>
                           <div className="slot-meta">
@@ -619,7 +619,7 @@ export default function Home() {
                 <span className="modal-info-label">Family</span>
                 <span className="modal-info-value">
                   #{selectedFamily.id}
-                  <span className={groupBadgeClass(selectedFamily.group)}>Group {groupLabel(selectedFamily.group)}</span>
+                  <span className={groupBadge(selectedFamily.group, selectedFamily).className}>{groupBadge(selectedFamily.group, selectedFamily).text}</span>
                 </span>
               </div>
               <div className="modal-info-row">

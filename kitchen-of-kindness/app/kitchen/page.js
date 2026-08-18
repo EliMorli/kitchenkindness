@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
-import { computeGroups, groupBadgeClass, groupLabel } from '../../lib/groups';
+import { computeGroups, groupBadge } from '../../lib/groups';
 
 const DELIVERY_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'];
 const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -136,7 +136,7 @@ export default function KitchenPage() {
               filteredFamilies.map((family, idx) => (
                 <tr key={family.id} className={idx % 2 === 0 ? 'row-even' : 'row-odd'}>
                   <td className="col-group">
-                    <span className={groupBadgeClass(family.group)}>{groupLabel(family.group)}</span>
+                    <span className={groupBadge(family.group, family).className}>{groupBadge(family.group, family).short}</span>
                   </td>
                   <td className="col-id">{family.family_id}</td>
                   {isThursday ? (

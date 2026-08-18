@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import Script from 'next/script';
 import { supabase } from '../../lib/supabase';
-import { computeGroups, groupBadgeClass, groupLabel } from '../../lib/groups';
+import { computeGroups, groupBadge } from '../../lib/groups';
 
 const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD;
 const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
@@ -996,7 +996,7 @@ export default function AdminPage() {
                         <div className="slot-main">
                           <div className="slot-family">
                             Family #{family.family_id}
-                            <span className={groupBadgeClass(family.group)}>Group {groupLabel(family.group)}</span>
+                            <span className={groupBadge(family.group, family).className}>{groupBadge(family.group, family).text}</span>
                           </div>
                           <div className="slot-address">{family.address}</div>
                           <div className="slot-meta">
@@ -1075,7 +1075,7 @@ export default function AdminPage() {
                             <div key={family.id} className={`slot ${slotClass}`}>
                               <div className="slot-family">
                                 Family #{family.family_id}
-                                <span className={groupBadgeClass(family.group)}>Group {groupLabel(family.group)}</span>
+                                <span className={groupBadge(family.group, family).className}>{groupBadge(family.group, family).text}</span>
                               </div>
                               <div className="slot-address">{family.address}</div>
                               <div className="slot-meta">
