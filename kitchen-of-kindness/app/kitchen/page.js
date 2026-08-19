@@ -74,18 +74,32 @@ export default function KitchenPage() {
         ungrouped.push(f);
       }
     });
+    // WhatsApp only auto-links raw URLs (no [text](url) hyperlinks), so each
+    // family line carries a short maps link. Coordinates keep it compact and
+    // exact; families without coords fall back to an address-search link.
+    const mapLink = f => {
+      if (f.latitude != null && f.longitude != null) {
+        return `https://maps.google.com/?q=${f.latitude.toFixed(5)},${f.longitude.toFixed(5)}`;
+      }
+      if (f.address && !isPickup(f)) {
+        return `https://maps.google.com/?q=${encodeURIComponent(formatAddress(f.address, f.unit))}`;
+      }
+      return '';
+    };
+    const familyLine = f => {
+      const sat = selectedDay === 'Thursday' && f.saturday_meals ? ' (+Sat)' : '';
+      const link = mapLink(f);
+      return `${f.family_id} \u2014 ${addressArea(f.address) || '\u2014'}${sat}${link ? `\n${link}` : ''}`;
+    };
     const lines = [`\u{1F372} Kitchen of Kindness \u2014 ${selectedDay} deliveries`, ''];
     for (const [g, list] of grouped) {
       lines.push(`*Group ${g}* (${list.length} ${list.length === 1 ? 'bag' : 'bags'})`);
-      list.forEach(f => {
-        const sat = selectedDay === 'Thursday' && f.saturday_meals ? ' (+Sat)' : '';
-        lines.push(`${f.family_id} \u2014 ${addressArea(f.address) || '\u2014'}${sat}`);
-      });
+      list.forEach(f => lines.push(familyLine(f)));
       lines.push('');
     }
     if (ungrouped.length) {
       lines.push('*Ungrouped*');
-      ungrouped.forEach(f => lines.push(`${f.family_id} \u2014 ${addressArea(f.address) || '\u2014'}`));
+      ungrouped.forEach(f => lines.push(familyLine(f)));
       lines.push('');
     }
     if (pickups.length) {
