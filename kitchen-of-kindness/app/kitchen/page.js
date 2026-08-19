@@ -75,26 +75,12 @@ export default function KitchenPage() {
       }
     });
     // WhatsApp only auto-links raw URLs (no [text](url) hyperlinks), so each
-    // family line carries a maps link. Linking by address (not lat,lng) so the
-    // opened map shows a readable address instead of raw coordinates; the
-    // spaces become "+" and commas stay literal to keep the URL scannable.
-    const mapLink = f => {
-      if (isPickup(f)) return '';
-      if (f.address) {
-        const q = encodeURIComponent(formatAddress(f.address, f.unit))
-          .replace(/%20/g, '+')
-          .replace(/%2C/g, ',');
-        return `https://maps.google.com/?q=${q}`;
-      }
-      if (f.latitude != null && f.longitude != null) {
-        return `https://maps.google.com/?q=${f.latitude.toFixed(5)},${f.longitude.toFixed(5)}`;
-      }
-      return '';
-    };
+    // family line carries a short branded link (/m/<id>) that our own route
+    // redirects to Google Maps for that family's current address.
     const familyLine = f => {
       const sat = selectedDay === 'Thursday' && f.saturday_meals ? ' (+Sat)' : '';
-      const link = mapLink(f);
-      return `${f.family_id} \u2014 ${addressArea(f.address) || '\u2014'}${sat}${link ? `\n${link}` : ''}`;
+      const link = isPickup(f) ? '' : ` \u2014 ${window.location.origin}/m/${f.family_id}`;
+      return `${f.family_id} \u2014 ${addressArea(f.address) || '\u2014'}${sat}${link}`;
     };
     const lines = [`\u{1F372} Kitchen of Kindness \u2014 ${selectedDay} deliveries`, ''];
     for (const [g, list] of grouped) {
