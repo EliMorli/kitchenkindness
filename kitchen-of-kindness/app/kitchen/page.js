@@ -75,14 +75,19 @@ export default function KitchenPage() {
       }
     });
     // WhatsApp only auto-links raw URLs (no [text](url) hyperlinks), so each
-    // family line carries a short maps link. Coordinates keep it compact and
-    // exact; families without coords fall back to an address-search link.
+    // family line carries a maps link. Linking by address (not lat,lng) so the
+    // opened map shows a readable address instead of raw coordinates; the
+    // spaces become "+" and commas stay literal to keep the URL scannable.
     const mapLink = f => {
+      if (isPickup(f)) return '';
+      if (f.address) {
+        const q = encodeURIComponent(formatAddress(f.address, f.unit))
+          .replace(/%20/g, '+')
+          .replace(/%2C/g, ',');
+        return `https://maps.google.com/?q=${q}`;
+      }
       if (f.latitude != null && f.longitude != null) {
         return `https://maps.google.com/?q=${f.latitude.toFixed(5)},${f.longitude.toFixed(5)}`;
-      }
-      if (f.address && !isPickup(f)) {
-        return `https://maps.google.com/?q=${encodeURIComponent(formatAddress(f.address, f.unit))}`;
       }
       return '';
     };
