@@ -70,6 +70,22 @@ export default function Home() {
     if (savedPhone) setVolunteerPhone(savedPhone);
   }, []);
 
+  // Deep link from the kitchen's WhatsApp checklist: /?date=YYYY-MM-DD opens
+  // the claim list for that day. Parsed in local time (no toISOString shift);
+  // invalid, Fri/Sat, or out-of-season dates fall back to default behavior.
+  useEffect(() => {
+    const dateStr = new URLSearchParams(window.location.search).get('date');
+    if (!dateStr) return;
+    const parts = dateStr.split('-').map(Number);
+    if (parts.length !== 3 || parts.some(n => Number.isNaN(n))) return;
+    const [y, m, d] = parts;
+    const parsed = new Date(y, m - 1, d);
+    if (parsed.getDay() > 4) return;
+    if (parsed < new Date(2026, 0, 25) || parsed > new Date(2026, 5, 30)) return;
+    setCurrentDate(parsed);
+    setViewMode('today');
+  }, []);
+
   // Load families and assignments from Supabase
   useEffect(() => {
     loadFamilies();
