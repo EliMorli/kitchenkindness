@@ -19,6 +19,7 @@ export default function KitchenPage() {
   const [loading, setLoading] = useState(true);
   const [selectedDay, setSelectedDay] = useState(getDefaultDay);
   const [copiedFlash, setCopiedFlash] = useState(false);
+  const [copiedChecklistFlash, setCopiedChecklistFlash] = useState(false);
 
   useEffect(() => {
     loadFamilies();
@@ -58,9 +59,7 @@ export default function KitchenPage() {
       });
   };
 
-  // WhatsApp-ready list of the day's deliveries, grouped: the admin copies
-  // this and pastes it into the volunteers group chat.
-  const buildWhatsAppList = (fams) => {
+  const partitionForDay = (fams) => {
     const grouped = new Map();
     const pickups = [];
     const ungrouped = [];
@@ -74,6 +73,25 @@ export default function KitchenPage() {
         ungrouped.push(f);
       }
     });
+    return { grouped, pickups, ungrouped };
+  };
+
+  // The calendar date of the selected day name: today if the names match,
+  // otherwise the next occurrence of that weekday. Local time, no UTC shift.
+  const dateForSelectedDay = () => {
+    const target = dayNames.indexOf(selectedDay);
+    const d = new Date();
+    while (d.getDay() !== target) d.setDate(d.getDate() + 1);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  // WhatsApp-ready list of the day's deliveries, grouped: the admin copies
+  // this and pastes it into the volunteers group chat.
+  const buildWhatsAppList = (fams) => {
+    const { grouped, pickups, ungrouped } = partitionForDay(fams);
     // WhatsApp only auto-links raw URLs (no [text](url) hyperlinks), so each
     // family line carries a short branded link (/m/<id>) that our own route
     // redirects to Google Maps for that family's current address.
@@ -99,15 +117,53 @@ export default function KitchenPage() {
     return lines.join('\n').trim();
   };
 
-  const handleCopyList = async () => {
+  // Checklist variant: leads with a link to the live claim page (the volunteer
+  // sign-up view for this date), where volunteers check off the bags they take
+  // and everyone sees what's left. Lines carry a \u2b1c to read as a checklist.
+  const buildChecklist = (fams) => {
+    const { grouped, pickups, ungrouped } = partitionForDay(fams);
+    const familyLine = f => {
+      const sat = selectedDay === 'Thursday' && f.saturday_meals ? ' (+Sat)' : '';
+      return `\u2b1c ${f.family_id} \u2014 ${addressArea(f.address) || '\u2014'}${sat}`;
+    };
+    const lines = [
+      `\u{1F372} Kitchen of Kindness \u2014 ${selectedDay} deliveries`,
+      '',
+      '\u2705 *Tap here to claim your bags (live list):*',
+      `${window.location.origin}/?date=${dateForSelectedDay()}`,
+      ''
+    ];
+    for (const [g, list] of grouped) {
+      lines.push(`*Group ${g}* (${list.length} ${list.length === 1 ? 'bag' : 'bags'})`);
+      list.forEach(f => lines.push(familyLine(f)));
+      lines.push('');
+    }
+    if (ungrouped.length) {
+      lines.push('*Ungrouped*');
+      ungrouped.forEach(f => lines.push(familyLine(f)));
+      lines.push('');
+    }
+    if (pickups.length) {
+      lines.push(`*Pickup at kitchen*: ${pickups.map(f => f.family_id).join(', ')}`);
+    }
+    return lines.join('\n').trim();
+  };
+
+  const copyToClipboard = async (text, setFlash) => {
     try {
-      await navigator.clipboard.writeText(buildWhatsAppList(filteredFamilies));
-      setCopiedFlash(true);
-      setTimeout(() => setCopiedFlash(false), 1500);
+      await navigator.clipboard.writeText(text);
+      setFlash(true);
+      setTimeout(() => setFlash(false), 1500);
     } catch (err) {
       console.error('Clipboard write failed:', err);
     }
   };
+
+  const handleCopyList = () =>
+    copyToClipboard(buildWhatsAppList(filteredFamilies), setCopiedFlash);
+
+  const handleCopyChecklist = () =>
+    copyToClipboard(buildChecklist(filteredFamilies), setCopiedChecklistFlash);
 
   const todayStr = dayNames[new Date().getDay()];
   const filteredFamilies = getFamiliesForDay();
@@ -139,9 +195,17 @@ export default function KitchenPage() {
             className="kitchen-copy-btn"
             onClick={handleCopyList}
             disabled={filteredFamilies.length === 0}
-            title="Copy the day's groups as a WhatsApp-ready list"
+            title="Copy the day's groups with a map link per family"
           >
             {copiedFlash ? '\u2713 Copied!' : '\u{1F4CB} Copy list'}
+          </button>
+          <button
+            className="kitchen-copy-btn"
+            onClick={handleCopyChecklist}
+            disabled={filteredFamilies.length === 0}
+            title="Copy the day's groups as a checklist with a live claim link on top"
+          >
+            {copiedChecklistFlash ? '\u2713 Copied!' : '\u2705 Copy checklist'}
           </button>
           <span className="kitchen-summary-item">{filteredFamilies.length} Families</span>
           {isThursday ? (
