@@ -119,12 +119,12 @@ export default function KitchenPage() {
 
   // Checklist variant: leads with a link to the live claim page (the volunteer
   // sign-up view for this date), where volunteers check off the bags they take
-  // and everyone sees what's left. Lines carry a \u2b1c to read as a checklist.
+  // and everyone sees what's left.
   const buildChecklist = (fams) => {
     const { grouped, pickups, ungrouped } = partitionForDay(fams);
     const familyLine = f => {
       const sat = selectedDay === 'Thursday' && f.saturday_meals ? ' (+Sat)' : '';
-      return `\u2b1c ${f.family_id} \u2014 ${addressArea(f.address) || '\u2014'}${sat}`;
+      return `${f.family_id} \u2014 ${addressArea(f.address) || '\u2014'}${sat}`;
     };
     const lines = [
       `\u{1F372} Kitchen of Kindness \u2014 ${selectedDay} deliveries`,
