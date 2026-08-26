@@ -92,13 +92,9 @@ export default function KitchenPage() {
   // this and pastes it into the volunteers group chat.
   const buildWhatsAppList = (fams) => {
     const { grouped, pickups, ungrouped } = partitionForDay(fams);
-    // WhatsApp only auto-links raw URLs (no [text](url) hyperlinks), so each
-    // family line carries a short branded link (/m/<id>) that our own route
-    // redirects to Google Maps for that family's current address.
     const familyLine = f => {
       const sat = selectedDay === 'Thursday' && f.saturday_meals ? ' (+Sat)' : '';
-      const link = isPickup(f) ? '' : ` \u2014 ${window.location.origin}/m/${f.family_id}`;
-      return `${f.family_id} \u2014 ${addressArea(f.address) || '\u2014'}${sat}${link}`;
+      return `${f.family_id} \u2014 ${addressArea(f.address) || '\u2014'}${sat}`;
     };
     const lines = [`\u{1F372} Kitchen of Kindness \u2014 ${selectedDay} deliveries`, ''];
     for (const [g, list] of grouped) {
