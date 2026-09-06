@@ -1,7 +1,9 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
+import { computeGroups, groupBadge } from '../lib/groups';
+import { formatAddress, formatNote } from '../lib/format';
 
 // Families are loaded from Supabase - empty fallback if database is unavailable
 const fallbackFamilies = [];
@@ -26,9 +28,6 @@ const generateDeliveryDates = () => {
 
 const deliveryDates = generateDeliveryDates();
 
-// Site password - set via NEXT_PUBLIC_SITE_PASSWORD environment variable
-const SITE_PASSWORD = process.env.NEXT_PUBLIC_SITE_PASSWORD;
-
 // Get today or nearest delivery day
 const getInitialDate = () => {
   const today = new Date();
@@ -44,9 +43,6 @@ const getInitialDate = () => {
 };
 
 export default function Home() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [passwordInput, setPasswordInput] = useState('');
-  const [passwordError, setPasswordError] = useState('');
   const [loading, setLoading] = useState(true);
   const [families, setFamilies] = useState(fallbackFamilies);
   const [assignments, setAssignments] = useState({});
@@ -66,26 +62,35 @@ export default function Home() {
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [selectedAssignment, setSelectedAssignment] = useState(null);
 
-  // Check if already authenticated and load saved volunteer info
+  // Load saved volunteer info
   useEffect(() => {
-    const auth = localStorage.getItem('kok_authenticated');
-    if (auth === 'true') {
-      setIsAuthenticated(true);
-    }
     const savedName = localStorage.getItem('kok_volunteer_name');
     const savedPhone = localStorage.getItem('kok_volunteer_phone');
     if (savedName) setVolunteerName(savedName);
     if (savedPhone) setVolunteerPhone(savedPhone);
-    setLoading(false);
+  }, []);
+
+  // Deep link from the kitchen's WhatsApp checklist: /?date=YYYY-MM-DD opens
+  // the claim list for that day. Parsed in local time (no toISOString shift);
+  // invalid, Fri/Sat, or out-of-season dates fall back to default behavior.
+  useEffect(() => {
+    const dateStr = new URLSearchParams(window.location.search).get('date');
+    if (!dateStr) return;
+    const parts = dateStr.split('-').map(Number);
+    if (parts.length !== 3 || parts.some(n => Number.isNaN(n))) return;
+    const [y, m, d] = parts;
+    const parsed = new Date(y, m - 1, d);
+    if (parsed.getDay() > 4) return;
+    if (parsed < new Date(2026, 0, 25) || parsed > new Date(2026, 5, 30)) return;
+    setCurrentDate(parsed);
+    setViewMode('today');
   }, []);
 
   // Load families and assignments from Supabase
   useEffect(() => {
-    if (isAuthenticated) {
-      loadFamilies();
-      loadAssignments();
-    }
-  }, [isAuthenticated]);
+    loadFamilies();
+    loadAssignments();
+  }, []);
 
   const loadFamilies = async () => {
     if (!supabase) return;
@@ -104,11 +109,14 @@ export default function Home() {
       if (data && data.length > 0) {
         const formattedFamilies = data.map(f => ({
           id: f.family_id,
+          family_id: f.family_id,
           address: f.address,
           instructions: f.instructions || 'Leave at door',
           contact: f.contact || '',
-          bags: (f.bags || 1) + (f.extra_bags || 0),
-          delivery_days: f.delivery_days || ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday']
+          delivery_days: f.delivery_days || ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'],
+          unit: f.unit || '',
+          latitude: f.latitude ?? null,
+          longitude: f.longitude ?? null
         }));
         setFamilies(formattedFamilies);
       }
@@ -142,17 +150,6 @@ export default function Home() {
       console.error('Error loading assignments:', error);
     }
     setLoading(false);
-  };
-
-  const handlePasswordSubmit = (e) => {
-    e.preventDefault();
-    if (passwordInput === SITE_PASSWORD) {
-      setIsAuthenticated(true);
-      localStorage.setItem('kok_authenticated', 'true');
-      setPasswordError('');
-    } else {
-      setPasswordError('Incorrect password. Please try again.');
-    }
   };
 
   const getAssignmentKey = (date, familyId) => {
@@ -323,7 +320,16 @@ export default function Home() {
 
   const getFamiliesForDate = (date) => {
     const dayName = dayNames[date.getDay()];
-    return families.filter(f => !f.delivery_days || f.delivery_days.includes(dayName));
+    const list = families.filter(f => !f.delivery_days || f.delivery_days.includes(dayName));
+    const groups = computeGroups(list);
+    return list
+      .map(f => ({ ...f, group: groups.get(f.family_id) ?? null }))
+      .sort((a, b) => {
+        const ag = a.group ?? Infinity;
+        const bg = b.group ?? Infinity;
+        if (ag !== bg) return ag - bg;
+        return Number(a.family_id) - Number(b.family_id);
+      });
   };
 
   // Stats for a specific date
@@ -361,29 +367,6 @@ export default function Home() {
     });
     return { totalSlots, filledSlots, volunteerCounts };
   };
-
-  // Password Screen
-  if (!isAuthenticated) {
-    return (
-      <div className="password-screen">
-        <div className="password-card">
-          <h1>🍲 Kitchen of Kindness</h1>
-          <p>Enter the volunteer password to continue</p>
-          <form onSubmit={handlePasswordSubmit}>
-            <input
-              type="password"
-              placeholder="Enter password"
-              value={passwordInput}
-              onChange={(e) => setPasswordInput(e.target.value)}
-              autoFocus
-            />
-            <button type="submit">Enter</button>
-          </form>
-          {passwordError && <p className="password-error">{passwordError}</p>}
-        </div>
-      </div>
-    );
-  }
 
   // Loading Screen
   if (loading) {
@@ -475,11 +458,13 @@ export default function Home() {
                     onClick={() => assignment ? handleTakenSlotClick(currentDate, family, assignment) : handleSlotClick(currentDate, family)}
                   >
                     <div className="slot-main">
-                      <div className="slot-family">Family #{family.id}</div>
-                      <div className="slot-address">{family.address}</div>
+                      <div className="slot-family">
+                        Family #{family.id}
+                        <span className={groupBadge(family.group, family).className}>{groupBadge(family.group, family).text}</span>
+                      </div>
+                      <div className="slot-address">{formatAddress(family.address, family.unit)}</div>
                       <div className="slot-meta">
-                        <span>📦 {family.bags} bag{family.bags > 1 ? 's' : ''}</span>
-                        <span>📋 {family.instructions}</span>
+                        <span>📋 {formatNote(family.instructions)}</span>
                         {family.contact && <span>📞 {family.contact}</span>}
                       </div>
                     </div>
@@ -577,11 +562,13 @@ export default function Home() {
                           className={`slot ${assignment ? (assignment.deliveredAt ? 'slot-delivered' : 'slot-taken') : 'slot-open'}`}
                           onClick={() => assignment ? handleTakenSlotClick(date, family, assignment) : handleSlotClick(date, family)}
                         >
-                          <div className="slot-family">Family #{family.id}</div>
-                          <div className="slot-address">{family.address}</div>
+                          <div className="slot-family">
+                            Family #{family.id}
+                            <span className={groupBadge(family.group, family).className}>{groupBadge(family.group, family).text}</span>
+                          </div>
+                          <div className="slot-address">{formatAddress(family.address, family.unit)}</div>
                           <div className="slot-meta">
-                            <span>📦 {family.bags} bag{family.bags > 1 ? 's' : ''}</span>
-                            <span>📋 {family.instructions}</span>
+                            <span>📋 {formatNote(family.instructions)}</span>
                           </div>
                           {assignment ? (
                             <div className="slot-volunteer">
@@ -648,19 +635,18 @@ export default function Home() {
               </div>
               <div className="modal-info-row">
                 <span className="modal-info-label">Family</span>
-                <span className="modal-info-value">#{selectedFamily.id}</span>
+                <span className="modal-info-value">
+                  #{selectedFamily.id}
+                  <span className={groupBadge(selectedFamily.group, selectedFamily).className}>{groupBadge(selectedFamily.group, selectedFamily).text}</span>
+                </span>
               </div>
               <div className="modal-info-row">
                 <span className="modal-info-label">Address</span>
-                <span className="modal-info-value">{selectedFamily.address}</span>
-              </div>
-              <div className="modal-info-row">
-                <span className="modal-info-label">Bags</span>
-                <span className="modal-info-value">{selectedFamily.bags}</span>
+                <span className="modal-info-value">{formatAddress(selectedFamily.address, selectedFamily.unit)}</span>
               </div>
               <div className="modal-info-row">
                 <span className="modal-info-label">Instructions</span>
-                <span className="modal-info-value">{selectedFamily.instructions}</span>
+                <span className="modal-info-value">{formatNote(selectedFamily.instructions)}</span>
               </div>
               {selectedFamily.contact && (
                 <div className="modal-info-row">
@@ -719,15 +705,11 @@ export default function Home() {
               </div>
               <div className="modal-info-row">
                 <span className="modal-info-label">Address</span>
-                <span className="modal-info-value">{selectedFamily.address}</span>
-              </div>
-              <div className="modal-info-row">
-                <span className="modal-info-label">Bags</span>
-                <span className="modal-info-value">{selectedFamily.bags}</span>
+                <span className="modal-info-value">{formatAddress(selectedFamily.address, selectedFamily.unit)}</span>
               </div>
               <div className="modal-info-row">
                 <span className="modal-info-label">Instructions</span>
-                <span className="modal-info-value">{selectedFamily.instructions}</span>
+                <span className="modal-info-value">{formatNote(selectedFamily.instructions)}</span>
               </div>
               {selectedFamily.contact && (
                 <div className="modal-info-row">
