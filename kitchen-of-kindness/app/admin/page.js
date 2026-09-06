@@ -5,6 +5,10 @@ import Script from 'next/script';
 import { supabase } from '../../lib/supabase';
 import { computeGroups, groupBadge, isPickup, haversineKm } from '../../lib/groups';
 import { formatAddress, formatNote } from '../../lib/format';
+import {
+  loadDaysForWeek, dateRange, slugify, dayName as weekDayName, shortDate as weekShortDate,
+  activeSignups as weekActiveSignups, spotsLeft as weekSpotsLeft
+} from '../../lib/weeks';
 
 const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD;
 const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
@@ -86,6 +90,12 @@ export default function AdminPage() {
   const [copiedFlash, setCopiedFlash] = useState(false);
   const [backfillProgress, setBackfillProgress] = useState(null);
   const [formatProgress, setFormatProgress] = useState(null);
+  const [weeks, setWeeks] = useState([]);
+  const [weekForm, setWeekForm] = useState({
+    title: '', emoji: '🍎', subtitle: '', start_date: '', end_date: '', days: {}
+  });
+  const [weekSaving, setWeekSaving] = useState(false);
+  const [weekCopied, setWeekCopied] = useState(null);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -114,6 +124,7 @@ export default function AdminPage() {
     if (isAuthenticated) {
       loadFamilies();
       loadAssignments();
+      loadWeeks();
     }
   }, [isAuthenticated]);
 
@@ -587,6 +598,156 @@ export default function AdminPage() {
     setTimeout(() => setFormatProgress(null), 4000);
   };
 
+  // ---- Special weeks (holiday prep sign-ups) ----
+  const loadWeeks = async () => {
+    if (!supabase) return;
+    try {
+      const { data, error } = await supabase
+        .from('volunteer_weeks')
+        .select('*')
+        .order('start_date', { ascending: false });
+      if (error) throw error;
+      const withDays = await Promise.all(
+        (data || []).map(async w => ({ ...w, days: await loadDaysForWeek(supabase, w.id) }))
+      );
+      setWeeks(withDays);
+    } catch (error) {
+      console.error('Error loading special weeks:', error);
+    }
+  };
+
+  const weekFormDates = dateRange(weekForm.start_date, weekForm.end_date);
+
+  const updateWeekFormDay = (date, patch) => {
+    setWeekForm(prev => ({
+      ...prev,
+      days: { ...prev.days, [date]: { capacity: '2', unlimited: false, note: '', ...(prev.days[date] || {}), ...patch } }
+    }));
+  };
+
+  const handleCreateWeek = async (e) => {
+    e.preventDefault();
+    if (!supabase) return;
+    if (!weekForm.title.trim() || !weekForm.start_date || !weekForm.end_date) {
+      alert('Title, start date, and end date are required.');
+      return;
+    }
+    if (weekFormDates.length === 0) {
+      alert('End date must be on or after the start date.');
+      return;
+    }
+    const slug = slugify(weekForm.title, weekForm.start_date);
+    if (weeks.some(w => w.slug === slug)) {
+      alert(`A week with the link "${slug}" already exists — change the title.`);
+      return;
+    }
+    setWeekSaving(true);
+    try {
+      const { data: week, error } = await supabase
+        .from('volunteer_weeks')
+        .insert({
+          slug,
+          title: weekForm.title.trim(),
+          subtitle: weekForm.subtitle.trim(),
+          emoji: weekForm.emoji.trim() || '🍎',
+          start_date: weekForm.start_date,
+          end_date: weekForm.end_date
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      const rows = weekFormDates.map(date => {
+        const d = weekForm.days[date] || {};
+        const unlimited = !!d.unlimited;
+        const cap = parseInt(d.capacity ?? '2', 10);
+        return {
+          week_id: week.id,
+          date,
+          capacity: unlimited ? null : (Number.isFinite(cap) && cap > 0 ? cap : 2),
+          note: (d.note || '').trim()
+        };
+      });
+      const { error: dErr } = await supabase.from('volunteer_week_days').insert(rows);
+      if (dErr) throw dErr;
+      setWeekForm({ title: '', emoji: '🍎', subtitle: '', start_date: '', end_date: '', days: {} });
+      await loadWeeks();
+      alert(`Created! Share: ${window.location.origin}/week/${slug}`);
+    } catch (error) {
+      console.error('Error creating week:', error);
+      alert('Error creating the week. Please try again.');
+    }
+    setWeekSaving(false);
+  };
+
+  const handleToggleWeekActive = async (week) => {
+    if (!supabase) return;
+    try {
+      const { error } = await supabase
+        .from('volunteer_weeks')
+        .update({ active: !week.active })
+        .eq('id', week.id);
+      if (error) throw error;
+      await loadWeeks();
+    } catch (error) {
+      console.error('Error updating week:', error);
+    }
+  };
+
+  const handleDeleteWeek = async (week) => {
+    if (!supabase) return;
+    const count = week.days.reduce((s, d) => s + weekActiveSignups(d).length, 0);
+    if (!confirm(`Delete "${week.title}" and its ${count} sign-up${count === 1 ? '' : 's'}? This cannot be undone.`)) return;
+    try {
+      const { error } = await supabase.from('volunteer_weeks').delete().eq('id', week.id);
+      if (error) throw error;
+      await loadWeeks();
+    } catch (error) {
+      console.error('Error deleting week:', error);
+      alert('Error deleting the week.');
+    }
+  };
+
+  const handleCancelWeekSignup = async (signup, day) => {
+    if (!supabase) return;
+    if (!confirm(`Remove ${signup.volunteer_name} from ${weekDayName(day.date)}?`)) return;
+    try {
+      const { error } = await supabase
+        .from('volunteer_week_signups')
+        .update({ cancelled_at: new Date().toISOString() })
+        .eq('id', signup.id);
+      if (error) throw error;
+      await loadWeeks();
+    } catch (error) {
+      console.error('Error cancelling sign-up:', error);
+    }
+  };
+
+  const buildWeekBlurb = (week) => {
+    const lines = [`${week.emoji} *${week.title}*`];
+    if (week.subtitle) lines.push(week.subtitle);
+    lines.push('');
+    week.days.forEach(d => {
+      const left = weekSpotsLeft(d);
+      const status = left === null
+        ? 'unlimited — bring friends!'
+        : left === 0 ? 'FULL 🎉' : `${left} ${left === 1 ? 'spot' : 'spots'} left`;
+      lines.push(`${weekDayName(d.date).slice(0, 3)} ${weekShortDate(d.date)} — ${status}${d.note ? ` (${d.note})` : ''}`);
+    });
+    lines.push('');
+    lines.push(`👉 Sign up here: ${window.location.origin}/week/${week.slug}`);
+    return lines.join('\n');
+  };
+
+  const copyWeekText = async (key, text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setWeekCopied(key);
+      setTimeout(() => setWeekCopied(null), 1500);
+    } catch (err) {
+      console.error('Clipboard write failed:', err);
+    }
+  };
+
   const handleToggleActive = async (family) => {
     if (!supabase) return;
     try {
@@ -915,6 +1076,12 @@ export default function AdminPage() {
           onClick={() => setActiveTab('families')}
         >
           Families
+        </button>
+        <button
+          className={`tab-btn ${activeTab === 'weeks' ? 'active' : ''}`}
+          onClick={() => setActiveTab('weeks')}
+        >
+          Special Weeks
         </button>
       </div>
 
@@ -1420,6 +1587,180 @@ export default function AdminPage() {
               </div>
             )}
           </section>
+        )}
+
+        {/* Special Weeks Tab — holiday prep sign-ups */}
+        {activeTab === 'weeks' && (
+          <>
+            <section className="admin-form-section">
+              <h2>Create a Special Week</h2>
+              <p className="history-subtitle">
+                A standalone, phone-friendly sign-up page for a run of kitchen days (e.g. holiday prep). Each day gets its own spot count; volunteers pick a day and sign up.
+              </p>
+              <form onSubmit={handleCreateWeek} className="admin-form">
+                <div className="form-group">
+                  <label>Title *</label>
+                  <input
+                    type="text"
+                    value={weekForm.title}
+                    onChange={e => setWeekForm(p => ({ ...p, title: e.target.value }))}
+                    placeholder="Sukkot Prep Week"
+                    required
+                  />
+                  {weekForm.title && weekForm.start_date && (
+                    <small style={{ display: 'block', marginTop: 4, color: '#666' }}>
+                      Link will be: /week/{slugify(weekForm.title, weekForm.start_date)}
+                    </small>
+                  )}
+                </div>
+                <div className="form-group">
+                  <label>Emoji</label>
+                  <input
+                    type="text"
+                    value={weekForm.emoji}
+                    onChange={e => setWeekForm(p => ({ ...p, emoji: e.target.value }))}
+                    placeholder="🍎🍯"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Subtitle (optional)</label>
+                  <input
+                    type="text"
+                    value={weekForm.subtitle}
+                    onChange={e => setWeekForm(p => ({ ...p, subtitle: e.target.value }))}
+                    placeholder="Help us get the kitchen ready — pick a day and come cook with us!"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Start date *</label>
+                  <input
+                    type="date"
+                    value={weekForm.start_date}
+                    onChange={e => setWeekForm(p => ({ ...p, start_date: e.target.value }))}
+                    required
+                  />
+                </div>
+                <div className="form-group">
+                  <label>End date *</label>
+                  <input
+                    type="date"
+                    value={weekForm.end_date}
+                    onChange={e => setWeekForm(p => ({ ...p, end_date: e.target.value }))}
+                    required
+                  />
+                </div>
+                {weekFormDates.length > 0 && (
+                  <div className="form-group">
+                    <label>Spots per day</label>
+                    <div className="week-form-days">
+                      {weekFormDates.map(date => {
+                        const d = weekForm.days[date] || { capacity: '2', unlimited: false, note: '' };
+                        return (
+                          <div key={date} className="week-form-day">
+                            <span><strong>{weekDayName(date).slice(0, 3)}</strong> {weekShortDate(date)}</span>
+                            <input
+                              type="number"
+                              min="1"
+                              max="200"
+                              value={d.capacity}
+                              disabled={d.unlimited}
+                              onChange={e => updateWeekFormDay(date, { capacity: e.target.value })}
+                            />
+                            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 500 }}>
+                              <input
+                                type="checkbox"
+                                checked={d.unlimited}
+                                onChange={e => updateWeekFormDay(date, { unlimited: e.target.checked })}
+                              />
+                              Unlimited
+                            </label>
+                            <input
+                              type="text"
+                              value={d.note}
+                              placeholder="Note (e.g. Big cooking day!)"
+                              onChange={e => updateWeekFormDay(date, { note: e.target.value })}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                <div className="form-buttons">
+                  <button type="submit" className="btn-primary" disabled={weekSaving}>
+                    {weekSaving ? 'Creating…' : 'Create week'}
+                  </button>
+                </div>
+              </form>
+            </section>
+
+            <section className="admin-list-section">
+              <h2>Special Weeks ({weeks.length})</h2>
+              {weeks.length === 0 ? (
+                <p>No special weeks yet. Create one above.</p>
+              ) : (
+                weeks.map(week => {
+                  const total = week.days.reduce((s, d) => s + weekActiveSignups(d).length, 0);
+                  const url = `${typeof window !== 'undefined' ? window.location.origin : ''}/week/${week.slug}`;
+                  return (
+                    <div key={week.id} className={`week-admin-card ${week.active ? '' : 'closed'}`}>
+                      <div className="week-admin-head">
+                        <div>
+                          <div className="week-admin-title">{week.emoji} {week.title}</div>
+                          <div className="week-admin-meta">
+                            {weekShortDate(week.start_date)} – {weekShortDate(week.end_date)} · {total} sign-up{total === 1 ? '' : 's'} · {week.active ? 'Open' : 'Closed'}
+                            <br />
+                            <a href={`/week/${week.slug}`} target="_blank" rel="noreferrer">{url}</a>
+                          </div>
+                        </div>
+                        <div className="week-admin-actions">
+                          <button onClick={() => copyWeekText(`${week.id}-link`, url)}>
+                            {weekCopied === `${week.id}-link` ? '✓ Copied' : '🔗 Copy link'}
+                          </button>
+                          <button onClick={() => copyWeekText(`${week.id}-blurb`, buildWeekBlurb(week))}>
+                            {weekCopied === `${week.id}-blurb` ? '✓ Copied' : '📋 Copy WhatsApp blurb'}
+                          </button>
+                          <button onClick={() => handleToggleWeekActive(week)}>
+                            {week.active ? 'Close sign-ups' : 'Reopen'}
+                          </button>
+                          <button className="danger" onClick={() => handleDeleteWeek(week)}>Delete</button>
+                        </div>
+                      </div>
+                      {week.days.map(day => {
+                        const signups = weekActiveSignups(day);
+                        const left = weekSpotsLeft(day);
+                        return (
+                          <div key={day.id} className="week-day-row">
+                            <div className="day">
+                              {weekDayName(day.date)} <span style={{ color: '#64748b', fontWeight: 500 }}>{weekShortDate(day.date)}</span>
+                              {day.note && <div style={{ color: '#b45309', fontSize: '0.8rem', fontWeight: 500 }}>{day.note}</div>}
+                            </div>
+                            <div className="cap">
+                              {day.capacity == null ? `${signups.length} · ∞` : `${signups.length}/${day.capacity}`}
+                              {left === 0 && <div style={{ color: '#b91c1c', fontSize: '0.75rem' }}>FULL</div>}
+                            </div>
+                            <div>
+                              {signups.length === 0 ? (
+                                <span style={{ color: '#94a3b8' }}>No one yet</span>
+                              ) : (
+                                signups.map(s => (
+                                  <span key={s.id} className="week-signup">
+                                    {s.volunteer_name}
+                                    {s.volunteer_phone && <small>· {s.volunteer_phone}</small>}
+                                    <button title="Remove" onClick={() => handleCancelWeekSignup(s, day)}>✕</button>
+                                  </span>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })
+              )}
+            </section>
+          </>
         )}
 
         {/* Families Tab */}
