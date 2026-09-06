@@ -96,6 +96,8 @@ export default function AdminPage() {
   });
   const [weekSaving, setWeekSaving] = useState(false);
   const [weekCopied, setWeekCopied] = useState(null);
+  const [editingWeekId, setEditingWeekId] = useState(null);
+  const [weekEdit, setWeekEdit] = useState(null);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -621,7 +623,7 @@ export default function AdminPage() {
   const updateWeekFormDay = (date, patch) => {
     setWeekForm(prev => ({
       ...prev,
-      days: { ...prev.days, [date]: { capacity: '2', unlimited: false, note: '', ...(prev.days[date] || {}), ...patch } }
+      days: { ...prev.days, [date]: { capacity: '2', unlimited: false, note: '', time_label: '', ...(prev.days[date] || {}), ...patch } }
     }));
   };
 
@@ -664,7 +666,8 @@ export default function AdminPage() {
           week_id: week.id,
           date,
           capacity: unlimited ? null : (Number.isFinite(cap) && cap > 0 ? cap : 2),
-          note: (d.note || '').trim()
+          note: (d.note || '').trim(),
+          time_label: (d.time_label || '').trim()
         };
       });
       const { error: dErr } = await supabase.from('volunteer_week_days').insert(rows);
@@ -731,7 +734,8 @@ export default function AdminPage() {
       const status = left === null
         ? 'unlimited — bring friends!'
         : left === 0 ? 'FULL 🎉' : `${left} ${left === 1 ? 'spot' : 'spots'} left`;
-      lines.push(`${weekDayName(d.date).slice(0, 3)} ${weekShortDate(d.date)} — ${status}${d.note ? ` (${d.note})` : ''}`);
+      const time = d.time_label ? ` — ${d.time_label}` : '';
+      lines.push(`${weekDayName(d.date).slice(0, 3)} ${weekShortDate(d.date)}${time} — ${status}${d.note ? ` (${d.note})` : ''}`);
     });
     lines.push('');
     lines.push(`👉 Sign up here: ${window.location.origin}/week/${week.slug}`);
@@ -746,6 +750,121 @@ export default function AdminPage() {
     } catch (err) {
       console.error('Clipboard write failed:', err);
     }
+  };
+
+  // ---- Editing an existing special week ----
+  const startEditWeek = (week) => {
+    setEditingWeekId(week.id);
+    setWeekEdit({
+      title: week.title,
+      emoji: week.emoji,
+      subtitle: week.subtitle || '',
+      newDate: '',
+      days: week.days.map(d => ({
+        id: d.id,
+        date: d.date,
+        capacity: d.capacity == null ? '2' : String(d.capacity),
+        unlimited: d.capacity == null,
+        note: d.note || '',
+        time_label: d.time_label || '',
+        signups: weekActiveSignups(d).length,
+        remove: false
+      }))
+    });
+  };
+
+  const cancelEditWeek = () => {
+    setEditingWeekId(null);
+    setWeekEdit(null);
+  };
+
+  const updateEditDay = (i, patch) =>
+    setWeekEdit(p => ({ ...p, days: p.days.map((d, j) => (j === i ? { ...d, ...patch } : d)) }));
+
+  const addEditDay = () => {
+    setWeekEdit(p => {
+      if (!p.newDate) return p;
+      const existing = p.days.find(d => d.date === p.newDate);
+      if (existing) {
+        // Re-adding a day that was marked for removal just un-removes it.
+        return { ...p, newDate: '', days: p.days.map(d => (d.date === p.newDate ? { ...d, remove: false } : d)) };
+      }
+      const days = [
+        ...p.days,
+        { id: null, date: p.newDate, capacity: '2', unlimited: false, note: '', time_label: '', signups: 0, remove: false }
+      ].sort((a, b) => a.date.localeCompare(b.date));
+      return { ...p, days, newDate: '' };
+    });
+  };
+
+  const toggleRemoveEditDay = (i) => {
+    const d = weekEdit.days[i];
+    if (!d.remove && d.signups > 0) {
+      const ok = confirm(
+        `${weekDayName(d.date)} already has ${d.signups} sign-up${d.signups === 1 ? '' : 's'}. ` +
+        'Removing the day deletes those sign-ups too. Continue?'
+      );
+      if (!ok) return;
+    }
+    if (!d.id && !d.remove) {
+      // Never saved — just drop it from the list.
+      setWeekEdit(p => ({ ...p, days: p.days.filter((_, j) => j !== i) }));
+      return;
+    }
+    updateEditDay(i, { remove: !d.remove });
+  };
+
+  const handleSaveWeekEdit = async () => {
+    if (!supabase || !weekEdit || editingWeekId == null) return;
+    const kept = weekEdit.days.filter(d => !d.remove);
+    if (!weekEdit.title.trim()) { alert('Title is required.'); return; }
+    if (kept.length === 0) { alert('Keep at least one day.'); return; }
+    setWeekSaving(true);
+    try {
+      const dates = kept.map(d => d.date).sort();
+      const { error: wErr } = await supabase
+        .from('volunteer_weeks')
+        .update({
+          title: weekEdit.title.trim(),
+          emoji: weekEdit.emoji.trim() || '🍎',
+          subtitle: weekEdit.subtitle.trim(),
+          start_date: dates[0],
+          end_date: dates[dates.length - 1]
+        })
+        .eq('id', editingWeekId);
+      if (wErr) throw wErr;
+
+      const toDelete = weekEdit.days.filter(d => d.remove && d.id).map(d => d.id);
+      if (toDelete.length) {
+        const { error } = await supabase.from('volunteer_week_days').delete().in('id', toDelete);
+        if (error) throw error;
+      }
+      const toRow = d => {
+        const cap = parseInt(d.capacity, 10);
+        return {
+          capacity: d.unlimited ? null : (Number.isFinite(cap) && cap > 0 ? cap : 1),
+          note: d.note.trim(),
+          time_label: d.time_label.trim()
+        };
+      };
+      for (const d of kept) {
+        if (d.id) {
+          const { error } = await supabase.from('volunteer_week_days').update(toRow(d)).eq('id', d.id);
+          if (error) throw error;
+        } else {
+          const { error } = await supabase
+            .from('volunteer_week_days')
+            .insert({ week_id: editingWeekId, date: d.date, ...toRow(d) });
+          if (error) throw error;
+        }
+      }
+      cancelEditWeek();
+      await loadWeeks();
+    } catch (error) {
+      console.error('Error saving week:', error);
+      alert('Error saving changes. Please try again.');
+    }
+    setWeekSaving(false);
   };
 
   const handleToggleActive = async (family) => {
@@ -1659,6 +1778,12 @@ export default function AdminPage() {
                           <div key={date} className="week-form-day">
                             <span><strong>{weekDayName(date).slice(0, 3)}</strong> {weekShortDate(date)}</span>
                             <input
+                              type="text"
+                              value={d.time_label || ''}
+                              placeholder="Time (e.g. 10am – 2pm)"
+                              onChange={e => updateWeekFormDay(date, { time_label: e.target.value })}
+                            />
+                            <input
                               type="number"
                               min="1"
                               max="200"
@@ -1720,19 +1845,104 @@ export default function AdminPage() {
                           <button onClick={() => copyWeekText(`${week.id}-blurb`, buildWeekBlurb(week))}>
                             {weekCopied === `${week.id}-blurb` ? '✓ Copied' : '📋 Copy WhatsApp blurb'}
                           </button>
+                          <button onClick={() => (editingWeekId === week.id ? cancelEditWeek() : startEditWeek(week))}>
+                            {editingWeekId === week.id ? 'Cancel edit' : '✏️ Edit'}
+                          </button>
                           <button onClick={() => handleToggleWeekActive(week)}>
                             {week.active ? 'Close sign-ups' : 'Reopen'}
                           </button>
                           <button className="danger" onClick={() => handleDeleteWeek(week)}>Delete</button>
                         </div>
                       </div>
-                      {week.days.map(day => {
+                      {editingWeekId === week.id && weekEdit && (
+                        <div style={{ marginTop: 14 }}>
+                          <div className="week-edit-fields">
+                            <input
+                              type="text"
+                              value={weekEdit.title}
+                              onChange={e => setWeekEdit(p => ({ ...p, title: e.target.value }))}
+                              placeholder="Title"
+                            />
+                            <input
+                              type="text"
+                              value={weekEdit.emoji}
+                              onChange={e => setWeekEdit(p => ({ ...p, emoji: e.target.value }))}
+                              placeholder="Emoji"
+                            />
+                          </div>
+                          <input
+                            type="text"
+                            value={weekEdit.subtitle}
+                            onChange={e => setWeekEdit(p => ({ ...p, subtitle: e.target.value }))}
+                            placeholder="Subtitle (optional)"
+                            style={{ width: '100%', marginBottom: 10, padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: 8, fontFamily: 'inherit', fontSize: '0.9rem' }}
+                          />
+                          <div style={{ fontSize: '0.78rem', color: '#64748b', margin: '4px 0' }}>
+                            Each day: time · spots · unlimited · note. Removed days disappear from the volunteer page.
+                          </div>
+                          {weekEdit.days.map((d, i) => (
+                            <div key={d.date} className={`week-edit-day ${d.remove ? 'removed' : ''}`}>
+                              <span>
+                                <strong>{weekDayName(d.date).slice(0, 3)}</strong> {weekShortDate(d.date)}
+                                {d.signups > 0 && <small style={{ color: '#64748b' }}> · {d.signups} signed up</small>}
+                              </span>
+                              <input
+                                type="text"
+                                value={d.time_label}
+                                placeholder="Time (e.g. 10am – 2pm)"
+                                onChange={e => updateEditDay(i, { time_label: e.target.value })}
+                              />
+                              <input
+                                type="number"
+                                min="1"
+                                max="200"
+                                value={d.capacity}
+                                disabled={d.unlimited}
+                                onChange={e => updateEditDay(i, { capacity: e.target.value })}
+                              />
+                              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 500 }}>
+                                <input
+                                  type="checkbox"
+                                  checked={d.unlimited}
+                                  onChange={e => updateEditDay(i, { unlimited: e.target.checked })}
+                                />
+                                Unlimited
+                              </label>
+                              <input
+                                type="text"
+                                value={d.note}
+                                placeholder="Note"
+                                onChange={e => updateEditDay(i, { note: e.target.value })}
+                              />
+                              <button type="button" className="admin-cancel-btn" onClick={() => toggleRemoveEditDay(i)}>
+                                {d.remove ? 'Undo' : '✕ Remove'}
+                              </button>
+                            </div>
+                          ))}
+                          <div className="week-edit-add">
+                            <input
+                              type="date"
+                              value={weekEdit.newDate}
+                              onChange={e => setWeekEdit(p => ({ ...p, newDate: e.target.value }))}
+                            />
+                            <button type="button" onClick={addEditDay} disabled={!weekEdit.newDate}>+ Add day</button>
+                          </div>
+                          <div className="form-buttons" style={{ marginTop: 12 }}>
+                            <button type="button" className="btn-secondary" onClick={cancelEditWeek} disabled={weekSaving}>Cancel</button>
+                            <button type="button" className="btn-primary" onClick={handleSaveWeekEdit} disabled={weekSaving}>
+                              {weekSaving ? 'Saving…' : 'Save changes'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      {editingWeekId !== week.id && week.days.map(day => {
                         const signups = weekActiveSignups(day);
                         const left = weekSpotsLeft(day);
                         return (
                           <div key={day.id} className="week-day-row">
                             <div className="day">
                               {weekDayName(day.date)} <span style={{ color: '#64748b', fontWeight: 500 }}>{weekShortDate(day.date)}</span>
+                              {day.time_label && <div style={{ color: '#0891b2', fontSize: '0.8rem', fontWeight: 600 }}>🕐 {day.time_label}</div>}
                               {day.note && <div style={{ color: '#b45309', fontSize: '0.8rem', fontWeight: 500 }}>{day.note}</div>}
                             </div>
                             <div className="cap">

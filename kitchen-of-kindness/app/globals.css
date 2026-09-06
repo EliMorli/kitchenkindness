@@ -2190,9 +2190,20 @@ body {
 .week-signup small { color: #64748b; }
 .week-signup button { border: none; background: none; color: #b91c1c; cursor: pointer; font-weight: 700; padding: 0 4px; }
 .week-form-days { margin-top: 8px; }
-.week-form-day { display: grid; grid-template-columns: 150px 90px auto 1fr; gap: 10px; align-items: center; padding: 6px 0; }
+.week-form-day { display: grid; grid-template-columns: 130px 1fr 80px auto 1fr; gap: 10px; align-items: center; padding: 6px 0; }
 .week-form-day input[type="number"] { width: 80px; }
 @media (max-width: 640px) {
   .week-day-row { grid-template-columns: 1fr; gap: 4px; }
+  .week-form-day { grid-template-columns: 1fr 1fr; }
+}
+.wk-card-time { color: #0891b2; font-weight: 700; margin-top: 4px; font-size: 0.95rem; }
+.week-edit-day { display: grid; grid-template-columns: 130px 1fr 80px auto 1fr auto; gap: 8px; align-items: center; padding: 6px 0; border-top: 1px solid #f1f5f9; }
+.week-edit-day input[type="number"] { width: 70px; }
+.week-edit-day.removed { opacity: 0.45; text-decoration: line-through; }
+.week-edit-add { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+.week-edit-fields { display: grid; grid-template-columns: 1fr 80px; gap: 8px; margin-bottom: 8px; }
+.week-edit-fields input, .week-edit-day input[type="text"], .week-edit-add input { padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 8px; font-family: inherit; font-size: 0.9rem; }
+@media (max-width: 720px) {
+  .week-edit-day { grid-template-columns: 1fr 1fr; }
   .week-form-day { grid-template-columns: 1fr 1fr; }
 }

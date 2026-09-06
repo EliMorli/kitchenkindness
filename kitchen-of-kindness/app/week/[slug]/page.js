@@ -256,6 +256,7 @@ export default function WeekPage({ params }) {
                 <div>
                   <div className="wk-card-day">{dayName(day.date)}</div>
                   <div className="wk-card-date">{shortDate(day.date)}</div>
+                  {day.time_label && <div className="wk-card-time">🕐 {day.time_label}</div>}
                 </div>
                 <div className="wk-pill-stack">
                   {isToday && <span className="wk-pill today">TODAY</span>}
@@ -330,7 +331,11 @@ export default function WeekPage({ params }) {
           <div className="modal wk-modal" onClick={e => e.stopPropagation()}>
             <div className="wk-modal-emoji">{week.emoji}</div>
             <h2>Join us {dayName(selectedDay.date)}</h2>
-            <p className="wk-modal-sub">{longDate(selectedDay.date)}{selectedDay.note ? ` · ${selectedDay.note}` : ''}</p>
+            <p className="wk-modal-sub">
+              {longDate(selectedDay.date)}
+              {selectedDay.time_label ? ` · ${selectedDay.time_label}` : ''}
+              {selectedDay.note ? ` · ${selectedDay.note}` : ''}
+            </p>
             <input
               className="wk-input"
               type="text"
