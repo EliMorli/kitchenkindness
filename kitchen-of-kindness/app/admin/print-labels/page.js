@@ -5,6 +5,8 @@ import { useSearchParams } from 'next/navigation';
 import { supabase } from '../../../lib/supabase';
 import { computeGroups, groupBadge } from '../../../lib/groups';
 import { formatAddress, formatNote } from '../../../lib/format';
+import { attachPauses, isDayPaused, isSaturdayPaused } from '../../../lib/pauses';
+import { loadSpecialOrdersForDate } from '../../../lib/weeks';
 
 // Labels: JADENS 4 in × 6 in thermal shipping labels (portrait).
 // Printer paper-size driver setting should match (any standard 4×6 thermal printer).
@@ -37,6 +39,7 @@ function PrintLabelsContent() {
   const pdfMode = searchParams.get('pdf') === '1';
 
   const [families, setFamilies] = useState([]);
+  const [specialWeeks, setSpecialWeeks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [authed, setAuthed] = useState(null); // null = checking
   const [layoutReady, setLayoutReady] = useState(false);
@@ -68,7 +71,12 @@ function PrintLabelsContent() {
           .eq('active', true)
           .order('family_id', { ascending: true });
         if (error) throw error;
-        if (!cancelled) setFamilies(data || []);
+        const withPauses = await attachPauses(supabase, data || []);
+        const weeks = dateStr ? await loadSpecialOrdersForDate(supabase, dateStr) : [];
+        if (!cancelled) {
+          setFamilies(withPauses);
+          setSpecialWeeks(weeks);
+        }
       } catch (e) {
         console.error('Error loading families:', e);
       } finally {
@@ -99,17 +107,15 @@ function PrintLabelsContent() {
   } else if (date) {
     const dayName = dayNames[date.getDay()];
     const isThursday = dayName === 'Thursday';
-    const familiesForDay = families.filter(f => {
-      const onThisDay = !f.delivery_days || f.delivery_days.includes(dayName);
-      const shabbatOnThursday = isThursday && f.saturday_meals;
-      return onThisDay || shabbatOnThursday;
-    });
+    const deliversToday = f =>
+      (!f.delivery_days || f.delivery_days.includes(dayName)) && !isDayPaused(f, dateStr);
+    const satToday = f => isThursday && !!f.saturday_meals && !isSaturdayPaused(f, dateStr);
+    const familiesForDay = families.filter(f => deliversToday(f) || satToday(f));
     const groups = computeGroups(familiesForDay);
     familiesForDay.forEach(f => {
       const g = groups.get(f.family_id) ?? null;
-      const onThisDay = !f.delivery_days || f.delivery_days.includes(dayName);
-      if (onThisDay) labels.push({ family: f, kind: 'regular', group: g });
-      if (isThursday && f.saturday_meals) labels.push({ family: f, kind: 'saturday', group: g });
+      if (deliversToday(f)) labels.push({ family: f, kind: 'regular', group: g });
+      if (satToday(f)) labels.push({ family: f, kind: 'saturday', group: g });
     });
     // Sort so same-group labels print consecutively; regular before its Saturday twin.
     labels.sort((a, b) => {
@@ -120,6 +126,27 @@ function PrintLabelsContent() {
       const bid = Number(b.family.family_id);
       if (aid !== bid) return aid - bid;
       return a.kind === 'saturday' ? 1 : -1;
+    });
+    // Special-week orders print after the regular run, with a "Special" badge.
+    specialWeeks.forEach(week => {
+      week.orders.forEach(o => {
+        labels.push({
+          kind: 'special',
+          group: null,
+          weekTitle: `${week.emoji} ${week.title}`,
+          family: {
+            id: `order-${o.id}`,
+            family_id: o.family_id,
+            label: o.label,
+            people_count: o.people_count,
+            address: o.address,
+            unit: o.unit,
+            contact: o.contact,
+            instructions: o.instructions,
+            notes: o.notes
+          }
+        });
+      });
     });
   }
 
@@ -301,6 +328,7 @@ function PrintLabelsContent() {
           line-height: 1;
           letter-spacing: -1px;
         }
+        .label-id-text { font-size: 30pt; line-height: 1.05; word-break: break-word; }
         .label-meals {
           font-size: 36pt;
           font-weight: 700;
@@ -394,8 +422,12 @@ function PrintLabelsContent() {
               className="label-page"
             >
               {isSat && <div className="sat-badge">SAT</div>}
-              <div className="label-group-badge">{groupBadge(label.group, f).text}</div>
-              <div className="label-id">#{f.family_id}</div>
+              <div className="label-group-badge">
+                {label.kind === 'special' ? `✨ Special · ${label.weekTitle}` : groupBadge(label.group, f).text}
+              </div>
+              <div className={`label-id ${f.family_id == null ? 'label-id-text' : ''}`}>
+                {f.family_id != null ? `#${f.family_id}` : (f.label || 'Special')}
+              </div>
               <div className="label-meals">Meals: {f.people_count || '?'}</div>
               <div className="label-address">{formatAddress(f.address, f.unit)}</div>
               {f.contact && <div className="label-phone">📞 {f.contact}</div>}

@@ -7,8 +7,9 @@ import { computeGroups, groupBadge, isPickup, haversineKm } from '../../lib/grou
 import { formatAddress, formatNote } from '../../lib/format';
 import {
   loadDaysForWeek, dateRange, slugify, dayName as weekDayName, shortDate as weekShortDate,
-  activeSignups as weekActiveSignups, spotsLeft as weekSpotsLeft
+  activeSignups as weekActiveSignups, spotsLeft as weekSpotsLeft, loadOrdersForWeek, orderTitle, toDateStr
 } from '../../lib/weeks';
+import { attachPauses, isDayPaused, activePauses, describePause, pauseWindow } from '../../lib/pauses';
 
 const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD;
 const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
@@ -98,6 +99,10 @@ export default function AdminPage() {
   const [weekCopied, setWeekCopied] = useState(null);
   const [printerSetupCopied, setPrinterSetupCopied] = useState(null);
   const [printToast, setPrintToast] = useState(null);
+  const [editingFamily, setEditingFamily] = useState(null);
+  const [pausePlan, setPausePlan] = useState({});
+  const [orderForm, setOrderForm] = useState(null); // { weekId, id?, ...fields }
+  const [orderSaving, setOrderSaving] = useState(false);
   const [editingWeekId, setEditingWeekId] = useState(null);
   const [weekEdit, setWeekEdit] = useState(null);
 
@@ -226,7 +231,7 @@ export default function AdminPage() {
         .order('family_id', { ascending: true });
 
       if (error) throw error;
-      setFamilies(data || []);
+      setFamilies(await attachPauses(supabase, data || []));
     } catch (error) {
       console.error('Error loading families:', error);
     }
@@ -319,6 +324,8 @@ export default function AdminPage() {
       longitude: null
     });
     setEditingId(null);
+    setEditingFamily(null);
+    setPausePlan({});
   };
 
   const handleSubmit = async (e) => {
@@ -365,15 +372,48 @@ export default function AdminPage() {
     }
 
     try {
+      // Temporary pauses: keep the day / Saturday in the saved schedule and
+      // record a pause window instead, so it resumes on its own.
+      const pausesToInsert = [];
+      let deliveryDays = [...formData.delivery_days];
+      let saturdayMeals = formData.saturday_meals;
+      if (editingFamily) {
+        removedDays.forEach(day => {
+          const plan = planFor(`day:${day}`);
+          if (plan.mode === 'temp') {
+            deliveryDays.push(day);
+            pausesToInsert.push({
+              family_id: editingFamily.family_id,
+              kind: 'day',
+              day_name: day,
+              ...pauseWindow('day', day, Number(plan.weeks) || 1)
+            });
+          }
+        });
+        deliveryDays = ALL_DAYS.filter(d => deliveryDays.includes(d));
+        if (removedSaturday) {
+          const plan = planFor('saturday');
+          if (plan.mode === 'temp') {
+            saturdayMeals = true;
+            pausesToInsert.push({
+              family_id: editingFamily.family_id,
+              kind: 'saturday',
+              day_name: null,
+              ...pauseWindow('saturday', null, Number(plan.weeks) || 1)
+            });
+          }
+        }
+      }
+
       const payload = {
         address,
         unit: formData.unit.trim(),
         instructions: formData.instructions.trim(),
         contact: formData.contact.trim(),
         people_count: formData.people_count,
-        delivery_days: formData.delivery_days,
+        delivery_days: deliveryDays,
         notes: formData.notes.trim(),
-        saturday_meals: formData.saturday_meals,
+        saturday_meals: saturdayMeals,
         active: formData.active,
         latitude,
         longitude
@@ -394,6 +434,11 @@ export default function AdminPage() {
         }
       }
       if (error) throw error;
+
+      if (pausesToInsert.length) {
+        const { error: pErr } = await supabase.from('family_pauses').insert(pausesToInsert);
+        if (pErr) throw pErr;
+      }
 
       await loadFamilies();
       resetForm();
@@ -419,8 +464,31 @@ export default function AdminPage() {
       longitude: family.longitude ?? null
     });
     setEditingId(family.id);
+    setEditingFamily(family);
+    setPausePlan({});
     setActiveTab('families');
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // Days / Saturday being turned OFF in this edit, compared to the saved family.
+  const removedDays = editingFamily
+    ? (editingFamily.delivery_days || ALL_DAYS).filter(d => !formData.delivery_days.includes(d))
+    : [];
+  const removedSaturday = !!(editingFamily && editingFamily.saturday_meals && !formData.saturday_meals);
+  const planFor = key => pausePlan[key] || { mode: 'temp', weeks: 1 };
+  const setPlan = (key, patch) => setPausePlan(prev => ({ ...prev, [key]: { ...planFor(key), ...patch } }));
+
+  const handleResumePause = async (pause) => {
+    if (!supabase) return;
+    if (!confirm(`Resume now? This removes: ${describePause(pause)}.`)) return;
+    try {
+      const { error } = await supabase.from('family_pauses').delete().eq('id', pause.id);
+      if (error) throw error;
+      await loadFamilies();
+    } catch (error) {
+      console.error('Error removing pause:', error);
+      alert('Could not remove the pause. Please try again.');
+    }
   };
 
   const handleDelete = async (family) => {
@@ -631,7 +699,11 @@ export default function AdminPage() {
         .order('start_date', { ascending: false });
       if (error) throw error;
       const withDays = await Promise.all(
-        (data || []).map(async w => ({ ...w, days: await loadDaysForWeek(supabase, w.id) }))
+        (data || []).map(async w => ({
+          ...w,
+          days: await loadDaysForWeek(supabase, w.id),
+          orders: await loadOrdersForWeek(supabase, w.id)
+        }))
       );
       setWeeks(withDays);
     } catch (error) {
@@ -888,6 +960,88 @@ export default function AdminPage() {
     setWeekSaving(false);
   };
 
+  // ---- Special orders on a special week ----
+  const emptyOrder = (weekId) => ({
+    weekId, id: null, family_id: '', label: '', people_count: 1, address: '', unit: '',
+    contact: '', instructions: 'Leave at door', notes: '', delivery_date: ''
+  });
+
+  const startOrder = (week, order) => {
+    setOrderForm(order
+      ? {
+          weekId: week.id, id: order.id,
+          family_id: order.family_id ?? '', label: order.label || '', people_count: order.people_count || 1,
+          address: order.address || '', unit: order.unit || '', contact: order.contact || '',
+          instructions: order.instructions || 'Leave at door', notes: order.notes || '',
+          delivery_date: order.delivery_date || ''
+        }
+      : emptyOrder(week.id));
+  };
+
+  const setOrderField = (name, value) => setOrderForm(prev => ({ ...prev, [name]: value }));
+
+  // Typing an existing family number fills in that family's details.
+  const prefillOrderFromFamily = () => {
+    const num = parseInt(orderForm?.family_id, 10);
+    const fam = Number.isFinite(num) ? families.find(f => f.family_id === num) : null;
+    if (!fam) return;
+    setOrderForm(prev => ({
+      ...prev,
+      address: prev.address || fam.address || '',
+      unit: prev.unit || fam.unit || '',
+      contact: prev.contact || fam.contact || '',
+      instructions: prev.instructions || fam.instructions || 'Leave at door',
+      people_count: prev.people_count || fam.people_count || 1
+    }));
+  };
+
+  const handleSaveOrder = async () => {
+    if (!supabase || !orderForm) return;
+    const famNum = orderForm.family_id === '' ? null : parseInt(orderForm.family_id, 10);
+    if (famNum == null && !orderForm.label.trim() && !orderForm.address.trim()) {
+      alert('Enter a family number, a name, or an address.');
+      return;
+    }
+    setOrderSaving(true);
+    try {
+      const row = {
+        week_id: orderForm.weekId,
+        family_id: Number.isFinite(famNum) ? famNum : null,
+        label: orderForm.label.trim(),
+        people_count: parseInt(orderForm.people_count, 10) || 1,
+        address: orderForm.address.trim(),
+        unit: String(orderForm.unit || '').trim(),
+        contact: orderForm.contact.trim(),
+        instructions: orderForm.instructions.trim(),
+        notes: orderForm.notes.trim(),
+        delivery_date: orderForm.delivery_date || null
+      };
+      const q = orderForm.id
+        ? supabase.from('volunteer_week_orders').update(row).eq('id', orderForm.id)
+        : supabase.from('volunteer_week_orders').insert(row);
+      const { error } = await q;
+      if (error) throw error;
+      setOrderForm(null);
+      await loadWeeks();
+    } catch (error) {
+      console.error('Error saving special order:', error);
+      alert('Could not save the special order. Please try again.');
+    }
+    setOrderSaving(false);
+  };
+
+  const handleDeleteOrder = async (order) => {
+    if (!supabase) return;
+    if (!confirm(`Delete special order ${orderTitle(order)}?`)) return;
+    try {
+      const { error } = await supabase.from('volunteer_week_orders').delete().eq('id', order.id);
+      if (error) throw error;
+      await loadWeeks();
+    } catch (error) {
+      console.error('Error deleting special order:', error);
+    }
+  };
+
   const handleToggleActive = async (family) => {
     if (!supabase) return;
     try {
@@ -917,8 +1071,9 @@ export default function AdminPage() {
     let thisWeekSlots = 0;
     deliveryDates.forEach(date => {
       const dayName = dayNames[date.getDay()];
+      const dStr = toDateStr(date);
       const familiesForDay = activeFamilies.filter(f =>
-        !f.delivery_days || f.delivery_days.includes(dayName)
+        (!f.delivery_days || f.delivery_days.includes(dayName)) && !isDayPaused(f, dStr)
       );
       totalSlots += familiesForDay.length;
       if (date >= thisWeekStart && date <= thisWeekEnd) {
@@ -950,7 +1105,7 @@ export default function AdminPage() {
       const dateStr = date.toISOString().split('T')[0];
       const dayName = dayNames[date.getDay()];
       const familiesForDay = activeFamilies.filter(f =>
-        !f.delivery_days || f.delivery_days.includes(dayName)
+        (!f.delivery_days || f.delivery_days.includes(dayName)) && !isDayPaused(f, toDateStr(date))
       );
 
       familiesForDay.forEach(family => {
@@ -1046,9 +1201,11 @@ export default function AdminPage() {
   // Sign-ups tab helpers (mirror of volunteer view)
   const getSignupFamiliesForDate = (date) => {
     const dayName = dayNames[date.getDay()];
+    const dateStr = toDateStr(date);
     const list = families
       .filter(f => f.active !== false)
-      .filter(f => !f.delivery_days || f.delivery_days.includes(dayName));
+      .filter(f => !f.delivery_days || f.delivery_days.includes(dayName))
+      .filter(f => !isDayPaused(f, dateStr));
     const groups = computeGroups(list);
     return list
       .map(f => ({ ...f, group: groups.get(f.family_id) ?? null }))
@@ -2054,6 +2211,66 @@ export default function AdminPage() {
                           </div>
                         </div>
                       )}
+                      {editingWeekId !== week.id && (
+                        <div className="week-orders">
+                          <h4>✨ Special orders ({week.orders.length}) — extra deliveries the kitchen sees under "Special Week"</h4>
+                          {week.orders.length === 0 && <div className="order-row"><span className="muted">None yet.</span></div>}
+                          {week.orders.map(o => (
+                            <div key={o.id} className="order-row">
+                              <strong>{orderTitle(o)}</strong>
+                              <span>{o.people_count} ppl</span>
+                              <span>
+                                {o.address ? formatAddress(o.address, o.unit) : <span className="muted">no address</span>}
+                                {o.family_id == null && o.label && o.address ? <div className="muted">{o.label}</div> : null}
+                              </span>
+                              <span className="muted">
+                                {o.delivery_date ? `${weekDayName(o.delivery_date)} ${weekShortDate(o.delivery_date)}` : 'Every day'}
+                                {[o.instructions, o.notes].filter(Boolean).length ? ` · ${[o.instructions, o.notes].filter(Boolean).join(' — ')}` : ''}
+                              </span>
+                              <span>
+                                <button type="button" onClick={() => startOrder(week, o)}>Edit</button>
+                                <button type="button" className="danger" onClick={() => handleDeleteOrder(o)}>✕</button>
+                              </span>
+                            </div>
+                          ))}
+                          {orderForm && orderForm.weekId === week.id ? (
+                            <div className="order-form">
+                              <input
+                                type="number" placeholder="Family # (optional)" value={orderForm.family_id}
+                                onChange={e => setOrderField('family_id', e.target.value)} onBlur={prefillOrderFromFamily}
+                              />
+                              <input type="text" placeholder="Name / label (if no family #)" value={orderForm.label} onChange={e => setOrderField('label', e.target.value)} />
+                              <input type="number" min="1" max="50" placeholder="People" value={orderForm.people_count} onChange={e => setOrderField('people_count', e.target.value)} />
+                              <select value={orderForm.delivery_date} onChange={e => setOrderField('delivery_date', e.target.value)}>
+                                <option value="">Every day of the week</option>
+                                {week.days.map(d => (
+                                  <option key={d.id} value={d.date}>{weekDayName(d.date)} {weekShortDate(d.date)}</option>
+                                ))}
+                              </select>
+                              <input className="span2" type="text" placeholder="Address" value={orderForm.address} onChange={e => setOrderField('address', e.target.value)} />
+                              <input type="text" placeholder="Unit / Apt #" value={orderForm.unit} onChange={e => setOrderField('unit', e.target.value)} />
+                              <input type="text" placeholder="Contact phone" value={orderForm.contact} onChange={e => setOrderField('contact', e.target.value)} />
+                              <select value={orderForm.instructions} onChange={e => setOrderField('instructions', e.target.value)}>
+                                <option value="Leave at door">Leave at door</option>
+                                <option value="Call when arrive">Call when arrive</option>
+                                <option value="Ring doorbell">Ring doorbell</option>
+                                <option value="Hand to resident">Hand to resident</option>
+                              </select>
+                              <input className="span2" type="text" placeholder="Notes" value={orderForm.notes} onChange={e => setOrderField('notes', e.target.value)} />
+                              <div className="actions">
+                                <button type="button" className="btn-secondary" onClick={() => setOrderForm(null)} disabled={orderSaving}>Cancel</button>
+                                <button type="button" className="btn-primary" onClick={handleSaveOrder} disabled={orderSaving}>
+                                  {orderSaving ? 'Saving…' : orderForm.id ? 'Save order' : 'Add order'}
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ marginTop: 8 }}>
+                              <button type="button" className="today-btn" onClick={() => startOrder(week, null)}>+ Add special order</button>
+                            </div>
+                          )}
+                        </div>
+                      )}
                       {editingWeekId !== week.id && week.days.map(day => {
                         const signups = weekActiveSignups(day);
                         const left = weekSpotsLeft(day);
@@ -2210,6 +2427,27 @@ export default function AdminPage() {
                       </button>
                     ))}
                   </div>
+                  {removedDays.map(day => {
+                    const plan = planFor(`day:${day}`);
+                    return (
+                      <div key={day} className="pause-panel">
+                        <strong>Turning off {day} — for how long?</strong>
+                        <label>
+                          <input type="radio" checked={plan.mode === 'temp'} onChange={() => setPlan(`day:${day}`, { mode: 'temp' })} />
+                          Skip the next
+                          <input
+                            type="number" min="1" max="52" value={plan.weeks}
+                            onChange={e => setPlan(`day:${day}`, { mode: 'temp', weeks: e.target.value })}
+                          />
+                          week{Number(plan.weeks) === 1 ? '' : 's'} — then {day} comes back by itself
+                        </label>
+                        <label>
+                          <input type="radio" checked={plan.mode === 'permanent'} onChange={() => setPlan(`day:${day}`, { mode: 'permanent' })} />
+                          Remove {day} permanently
+                        </label>
+                      </div>
+                    );
+                  })}
                 </div>
 
                 <div className="form-group">
@@ -2233,6 +2471,27 @@ export default function AdminPage() {
                     />
                     Saturday Meals (receives Saturday meal deliveries)
                   </label>
+                  {removedSaturday && (() => {
+                    const plan = planFor('saturday');
+                    return (
+                      <div className="pause-panel">
+                        <strong>Turning off Saturday meals — for how long?</strong>
+                        <label>
+                          <input type="radio" checked={plan.mode === 'temp'} onChange={() => setPlan('saturday', { mode: 'temp' })} />
+                          Skip the next
+                          <input
+                            type="number" min="1" max="52" value={plan.weeks}
+                            onChange={e => setPlan('saturday', { mode: 'temp', weeks: e.target.value })}
+                          />
+                          week{Number(plan.weeks) === 1 ? '' : 's'} — then Saturday meals come back by itself
+                        </label>
+                        <label>
+                          <input type="radio" checked={plan.mode === 'permanent'} onChange={() => setPlan('saturday', { mode: 'permanent' })} />
+                          Remove Saturday meals permanently
+                        </label>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 <div className="form-group checkbox-group">
@@ -2322,6 +2581,16 @@ export default function AdminPage() {
                       )}
                       {family.notes && (
                         <div className="family-notes">📝 {family.notes}</div>
+                      )}
+                      {activePauses(family).length > 0 && (
+                        <div>
+                          {activePauses(family).map(p => (
+                            <span key={p.id} className="pause-chip">
+                              ⏸ {describePause(p)}
+                              <button type="button" onClick={() => handleResumePause(p)}>Resume now</button>
+                            </span>
+                          ))}
+                        </div>
                       )}
                       <div className="family-actions">
                         <button onClick={() => handleEdit(family)}>Edit</button>
