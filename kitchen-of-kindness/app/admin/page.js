@@ -2200,6 +2200,16 @@ export default function AdminPage() {
                           <button onClick={() => copyWeekText(`${week.id}-blurb`, buildWeekBlurb(week))}>
                             {weekCopied === `${week.id}-blurb` ? '✓ Copied' : '📋 Copy WhatsApp blurb'}
                           </button>
+                          <button
+                            onClick={() => {
+                              if (editingWeekId === week.id) cancelEditWeek();
+                              startOrder(week, null);
+                              setTimeout(() => document.getElementById(`order-form-${week.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+                            }}
+                            title="Add a family / box to this week's special orders"
+                          >
+                            ➕ Add family
+                          </button>
                           <button onClick={() => (editingWeekId === week.id ? cancelEditWeek() : startEditWeek(week))}>
                             {editingWeekId === week.id ? 'Cancel edit' : '✏️ Edit'}
                           </button>
@@ -2312,9 +2322,9 @@ export default function AdminPage() {
                             </div>
                           ))}
                           {orderForm && orderForm.weekId === week.id ? (
-                            <div className="order-form">
+                            <div className="order-form" id={`order-form-${week.id}`}>
                               <input
-                                type="number" placeholder="Family # (optional)" value={orderForm.family_id}
+                                type="number" placeholder="Family # (optional)" value={orderForm.family_id} autoFocus
                                 onChange={e => setOrderField('family_id', e.target.value)} onBlur={prefillOrderFromFamily}
                               />
                               <input type="text" placeholder="Name / label (if no family #)" value={orderForm.label} onChange={e => setOrderField('label', e.target.value)} />
@@ -2349,7 +2359,7 @@ export default function AdminPage() {
                             </div>
                           ) : (
                             <div style={{ marginTop: 8 }}>
-                              <button type="button" className="today-btn" onClick={() => startOrder(week, null)}>+ Add special order</button>
+                              <button type="button" className="today-btn" onClick={() => startOrder(week, null)}>➕ Add family</button>
                             </div>
                           )}
                         </div>
