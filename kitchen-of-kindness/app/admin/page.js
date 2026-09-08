@@ -97,6 +97,7 @@ export default function AdminPage() {
   const [weekSaving, setWeekSaving] = useState(false);
   const [weekCopied, setWeekCopied] = useState(null);
   const [printerSetupCopied, setPrinterSetupCopied] = useState(null);
+  const [printToast, setPrintToast] = useState(null);
   const [editingWeekId, setEditingWeekId] = useState(null);
   const [weekEdit, setWeekEdit] = useState(null);
 
@@ -130,6 +131,25 @@ export default function AdminPage() {
       loadWeeks();
     }
   }, [isAuthenticated]);
+
+  // Status readback from the silent print tab (see /admin/print-labels).
+  useEffect(() => {
+    const onMessage = (event) => {
+      if (event.origin !== window.location.origin) return;
+      const d = event.data;
+      if (!d || d.type !== 'kok-labels-printed') return;
+      const what = d.test ? 'test label' : `${d.total} label${d.total === 1 ? '' : 's'}`;
+      const text = d.status === 'done'
+        ? `🖨️ Handed ${what} to the printer — watch it print.`
+        : d.status === 'no-labels'
+          ? 'No labels for that day.'
+          : '⚠️ Printing did not start — the window was not opened from the silent-print shortcut. See Printer setup.';
+      setPrintToast({ text, kind: d.status === 'done' ? 'ok' : d.status === 'no-labels' ? 'info' : 'warn' });
+      setTimeout(() => setPrintToast(null), 8000);
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
 
   useEffect(() => {
     // The module-scope handler above installs window.gm_authFailure before
@@ -1405,18 +1425,32 @@ export default function AdminPage() {
                   <button onClick={() => navigateSignupDay(1)}>Next Day →</button>
                 </div>
 
+                {printToast && (
+                  <div className={`print-toast ${printToast.kind}`}>
+                    {printToast.text}
+                    <button type="button" onClick={() => setPrintToast(null)} aria-label="Dismiss">✕</button>
+                  </div>
+                )}
+
                 <details className="printer-setup">
                   <summary>🖨️ Printer setup (one time, on the kitchen PC)</summary>
                   <ol>
+                    <li>
+                      <strong>Connect the JADENS and print its test page.</strong> USB is the most reliable. If you
+                      use Bluetooth, pair it in Windows, then in the JADENS printer's Properties → Ports pick the
+                      outgoing COM port (JADENS "Windows Bluetooth" guide). Confirm Windows' own test page prints.
+                    </li>
                     <li>
                       <strong>Make the JADENS the default printer.</strong> Windows Settings → Bluetooth &amp; devices →
                       Printers &amp; scanners → turn <em>off</em> "Let Windows manage my default printer" → open the
                       JADENS → <em>Set as default</em>.
                     </li>
                     <li>
-                      <strong>Set its paper to 4×6.</strong> Same screen → JADENS → <em>Printing preferences</em> → paper /
-                      page size <strong>4×6 in (102×152 mm)</strong>, orientation <strong>Portrait</strong> → OK. Silent
-                      printing uses these defaults.
+                      <strong>Set its paper to 4×6 — in both places.</strong> Same screen → JADENS →
+                      <em> Printing preferences</em> → paper / page size <strong>4×6 in (100×150 / 102×152 mm)</strong>,
+                      <strong> Portrait</strong> → OK. Then JADENS → <em>Printer properties</em> → <em>Advanced</em> →
+                      <em> Printing Defaults…</em> → same paper size → OK. Silent printing uses these defaults; the web
+                      page can't pick the paper itself.
                     </li>
                     <li>
                       <strong>Create the silent-print shortcut.</strong> Right-click the desktop → New → Shortcut → paste
@@ -1450,9 +1484,28 @@ export default function AdminPage() {
                       </small>
                     </li>
                     <li>
-                      <strong>Print.</strong> Open the admin from that shortcut → Sign-ups → Day → <em>🖨️ Print labels</em>.
-                      The labels go straight to the printer, one per label, and the tab closes itself. Use
-                      <em> 👁 Preview</em> when you want the normal print dialog instead.
+                      <strong>Print a test label.</strong> Open the admin from that shortcut, log in, then click
+                      <button
+                        type="button"
+                        className="today-btn"
+                        style={{ margin: '0 6px' }}
+                        onClick={() => window.open('/admin/print-labels?test=1&silent=1', '_blank')}
+                      >
+                        🧪 Print test label
+                      </button>
+                      — you should get one 4×6 label with no dialog and no URL/date printed on it.
+                      <small>
+                        If a print dialog appears: close <em>every</em> window of that browser, reopen it from the
+                        shortcut, and try again (the silent flag only applies when it starts fresh). If it prints on the
+                        wrong size, re-check step 3. If a dialog is unavoidable once, choose JADENS · 4×6 · Margins
+                        Default · Headers and footers off · Print — that choice is remembered for the shortcut's profile.
+                      </small>
+                    </li>
+                    <li>
+                      <strong>Daily use.</strong> From that shortcut: Sign-ups → Day → <em>🖨️ Print labels</em>. All of the
+                      day's labels go to the printer as one job, one label per page, and the tab closes itself. Use
+                      <em> 👁 Preview</em> when you want the normal print dialog instead. The browser can't see
+                      printer-side problems (offline, out of labels) — keep an eye on the printer.
                     </li>
                   </ol>
                 </details>

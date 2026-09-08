@@ -31,17 +31,33 @@ function PrintLabelsContent() {
   // where Chrome/Edge runs with --kiosk-printing (no dialog). Print at once,
   // confirm, and close the tab so the admin lands back on the Sign-ups view.
   const silent = searchParams.get('silent') === '1';
+  // test=1: one fixed sample label to verify the printer setup on any day.
+  // pdf=1: render only, never auto-print (for a future headless renderer).
+  const testMode = searchParams.get('test') === '1';
+  const pdfMode = searchParams.get('pdf') === '1';
 
   const [families, setFamilies] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [authed, setAuthed] = useState(null); // null = checking
+  const [layoutReady, setLayoutReady] = useState(false);
   const [printTriggered, setPrintTriggered] = useState(false);
-  const [printStatus, setPrintStatus] = useState('idle'); // idle | printing | done
+  // idle | printing | done | no-labels | timeout
+  const [printStatus, setPrintStatus] = useState('idle');
   const labelRefs = useRef([]);
+
+  // Same lightweight gate as /admin: the page lists family addresses.
+  useEffect(() => {
+    try {
+      setAuthed(localStorage.getItem('kok_admin_authenticated') === 'true');
+    } catch {
+      setAuthed(false);
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (!supabase) {
+      if (testMode || !supabase) {
         setLoading(false);
         return;
       }
@@ -65,7 +81,22 @@ function PrintLabelsContent() {
   }, []);
 
   const labels = [];
-  if (date) {
+  if (testMode) {
+    labels.push({
+      kind: 'saturday',
+      group: 1,
+      family: {
+        id: 'test',
+        family_id: 'TEST',
+        people_count: 2,
+        address: '12345 Sample Street, Valley Village, CA 91607',
+        unit: '7',
+        contact: '(818) 555-0123',
+        instructions: 'Leave at door',
+        notes: 'Test label — check size, margins, and that no header/footer printed.'
+      }
+    });
+  } else if (date) {
     const dayName = dayNames[date.getDay()];
     const isThursday = dayName === 'Thursday';
     const familiesForDay = families.filter(f => {
@@ -110,6 +141,7 @@ function PrintLabelsContent() {
         address.style.fontSize = `${addrPt}pt`;
       }
     }
+    setLayoutReady(true);
   }, [loading, labels.length]);
 
   useEffect(() => {
@@ -118,21 +150,63 @@ function PrintLabelsContent() {
     return () => window.removeEventListener('afterprint', onAfter);
   }, []);
 
-  useEffect(() => {
-    if (loading || printTriggered || labels.length === 0) return;
-    const t = setTimeout(() => {
-      setPrintTriggered(true);
-      setPrintStatus('printing');
-      window.print();
-    }, 400);
-    return () => clearTimeout(t);
-  }, [loading, labels.length, printTriggered]);
+  const reportToOpener = (status) => {
+    try {
+      window.opener?.postMessage(
+        { type: 'kok-labels-printed', date: dateStr, total: labels.length, status, test: testMode },
+        window.location.origin
+      );
+    } catch {}
+  };
 
-  // In silent mode, once the job is handed to the printer, close the tab.
+  // Silent mode: exactly one window.print() per page load, after fonts and the
+  // auto-shrink layout pass are done. (Chromium throttles repeated scripted
+  // prints, so all labels go as ONE multi-page job — the printer still emits
+  // each label in turn.) Preview mode never auto-prints; it has a Print button.
   useEffect(() => {
-    if (!silent || printStatus !== 'done') return;
-    const t = setTimeout(() => window.close(), 2500);
+    if (!silent || pdfMode || loading || !layoutReady || printTriggered || authed !== true) return;
+    if (labels.length === 0) {
+      setPrintStatus('no-labels');
+      reportToOpener('no-labels');
+      return;
+    }
+    let cancelled = false;
+    setPrintTriggered(true);
+    (document.fonts?.ready || Promise.resolve()).then(() => {
+      if (cancelled) return;
+      requestAnimationFrame(() => {
+        if (cancelled) return;
+        setPrintStatus('printing');
+        window.print();
+      });
+    });
+    return () => { cancelled = true; };
+  }, [silent, pdfMode, loading, layoutReady, printTriggered, labels.length, authed]);
+
+  // Watchdog: with --kiosk-printing, afterprint fires within a couple of
+  // seconds. If it hasn't after 20 s, a real print dialog is almost certainly
+  // open — say so instead of pretending the labels printed.
+  useEffect(() => {
+    if (printStatus !== 'printing') return;
+    const t = setTimeout(() => {
+      setPrintStatus(prev => (prev === 'printing' ? 'timeout' : prev));
+    }, 20000);
     return () => clearTimeout(t);
+  }, [printStatus]);
+
+  // Silent mode: report back to the admin tab and close.
+  useEffect(() => {
+    if (!silent) return;
+    if (printStatus === 'done' || printStatus === 'no-labels') {
+      if (printStatus === 'done') reportToOpener('done');
+      const t = setTimeout(() => {
+        window.close();
+        // window.close() is a no-op if the tab wasn't script-opened.
+        try { window.opener?.focus(); } catch {}
+      }, printStatus === 'done' ? 2500 : 4000);
+      return () => clearTimeout(t);
+    }
+    if (printStatus === 'timeout') reportToOpener('timeout');
   }, [silent, printStatus]);
 
   const printAgain = () => {
@@ -140,7 +214,15 @@ function PrintLabelsContent() {
     window.print();
   };
 
-  if (!dateStr || !date) {
+  if (authed === false) {
+    return (
+      <div style={{ padding: 20, fontFamily: 'system-ui, sans-serif' }}>
+        Please log in to the <a href="/admin">admin</a> first, then use Print labels from the Sign-ups tab.
+      </div>
+    );
+  }
+
+  if (!testMode && (!dateStr || !date)) {
     return (
       <div style={{ padding: 20, fontFamily: 'system-ui, sans-serif' }}>
         Missing or invalid <code>?date=YYYY-MM-DD</code> parameter.
@@ -148,19 +230,24 @@ function PrintLabelsContent() {
     );
   }
 
-  if (loading) {
+  if (loading || authed === null) {
     return <div style={{ padding: 20, fontFamily: 'system-ui, sans-serif' }}>Loading…</div>;
   }
 
   return (
     <>
       <style>{`
-        @page { size: 4in 6in; margin: 0.2in; }
+        /* margin: 0 makes the page box exactly one 4x6 label and leaves no
+           room for the browser's header/footer, so silent printing never
+           depends on that checkbox. Physical paper size still comes from the
+           printer's default (must be 4x6 in) — CSS can't choose paper. */
+        @page { size: 4in 6in; margin: 0; }
+        * { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
         @media print {
           html, body { background: #fff; margin: 0; padding: 0; }
           .no-print { display: none !important; }
-          .label-page { page-break-after: always; break-after: page; margin: 0; border: none; }
-          .label-page:last-child { page-break-after: auto; break-after: auto; }
+          .labels .label-page { margin: 0; border: none; }
+          .labels .label-page + .label-page { break-before: page; page-break-before: always; }
         }
         body {
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
@@ -192,9 +279,9 @@ function PrintLabelsContent() {
         .toolbar.silent strong { font-size: 1.05rem; }
         .toolbar .hint { color: #555; font-size: 12px; max-width: 600px; }
         .label-page {
-          width: 3.6in;
-          height: 5.6in;
-          padding: 0.1in;
+          width: 4in;
+          height: 6in;
+          padding: 0.3in;
           margin: 0.25in auto;
           box-sizing: border-box;
           background: #fff;
@@ -253,29 +340,37 @@ function PrintLabelsContent() {
         <div className={`toolbar no-print silent ${printStatus}`}>
           <strong>
             {printStatus === 'done'
-              ? `✓ Sent ${labels.length} label${labels.length === 1 ? '' : 's'} to the printer`
-              : printStatus === 'printing'
-                ? `🖨️ Sending ${labels.length} label${labels.length === 1 ? '' : 's'} to the printer…`
-                : `Preparing ${labels.length} label${labels.length === 1 ? '' : 's'}…`}
+              ? `✓ Handed ${labels.length} label${labels.length === 1 ? '' : 's'} to the printer`
+              : printStatus === 'no-labels'
+                ? 'No labels for this day'
+                : printStatus === 'timeout'
+                  ? '⚠️ Printing did not start'
+                  : printStatus === 'printing'
+                    ? `🖨️ Sending ${labels.length} label${labels.length === 1 ? '' : 's'} to the printer…`
+                    : `Preparing ${labels.length} label${labels.length === 1 ? '' : 's'}…`}
           </strong>
-          <span className="hint">{formatFullDate(date)}</span>
-          {printStatus === 'done' && (
+          <span className="hint">{testMode ? 'Test label' : formatFullDate(date)}</span>
+          {(printStatus === 'done' || printStatus === 'timeout') && (
             <>
               <button onClick={printAgain}>🖨️ Print again</button>
               <button onClick={() => window.close()}>Close</button>
-              <span className="hint">This tab closes by itself in a moment.</span>
             </>
           )}
-          <span className="hint">
-            If a print dialog appeared, Chrome isn't in silent-print mode — open the admin from the
-            "Kitchen Admin (silent print)" shortcut. See Printer setup on the Sign-ups tab.
-          </span>
+          {printStatus === 'done' && <span className="hint">Watch the printer — this tab closes by itself in a moment.</span>}
+          {printStatus === 'no-labels' && <span className="hint">This tab closes by itself in a moment.</span>}
+          {printStatus === 'timeout' && (
+            <span className="hint">
+              A print dialog is probably open, which means this window wasn't started from the
+              "Kitchen Admin (silent print)" shortcut. Close every window of that browser, reopen it from
+              the shortcut, and try again. See Printer setup on the Sign-ups tab.
+            </span>
+          )}
         </div>
       ) : (
         <div className="toolbar no-print">
-          <strong>{formatFullDate(date)}</strong>
+          <strong>{testMode ? 'Test label' : formatFullDate(date)}</strong>
           <span className="hint">{labels.length} label{labels.length === 1 ? '' : 's'}</span>
-          <button onClick={printAgain}>🖨️ Print again</button>
+          <button onClick={printAgain}>🖨️ Print</button>
           <button onClick={() => window.close()}>Close</button>
           <span className="hint">
             Sized for 4×6 in thermal labels (portrait). In the print dialog, set paper size to 4×6 and disable
@@ -287,7 +382,8 @@ function PrintLabelsContent() {
       {labels.length === 0 ? (
         <div style={{ padding: 20 }}>No deliveries scheduled for {formatFullDate(date)}.</div>
       ) : (
-        labels.map((label, i) => {
+        <div className="labels" data-ready={layoutReady ? '1' : '0'}>
+        {labels.map((label, i) => {
           const f = label.family;
           const isSat = label.kind === 'saturday';
           const notes = [f.instructions, f.notes].filter(Boolean).map(formatNote).join(' — ');
@@ -306,7 +402,8 @@ function PrintLabelsContent() {
               {notes && <div className="label-notes">📋 {notes}</div>}
             </div>
           );
-        })
+        })}
+        </div>
       )}
     </>
   );
