@@ -108,3 +108,28 @@ Update the `generateDeliveryDates()` function in `app/page.js` to change the sta
 - Next.js 14 (App Router)
 - Supabase (PostgreSQL database)
 - Vanilla CSS (no framework needed)
+
+
+## Printing delivery labels (kitchen PC)
+
+Labels are printed from `/admin/print-labels?date=YYYY-MM-DD` as ONE multi-page job
+(one 4x6 in page per label). Silent, dialog-free printing relies on three things:
+
+1. Chrome/Edge started from a shortcut with `--kiosk-printing --no-first-run
+   --no-default-browser-check` and its own `--user-data-dir` under
+   `C:\Users\Public\KitchenPrint-<browser>` (so the flag always applies, normal
+   browsing never changes the remembered printer, and no environment variable has to
+   expand inside the shortcut arguments). The admin's Sign-ups tab has a "Printer
+   setup" panel with copyable shortcut targets. In Chromium `window.print()` blocks
+   until the preview closes and `afterprint` fires even on Cancel, so the page
+   measures how long the call blocked to tell a silent print from a dialog.
+2. The JADENS set as the Windows default printer with 4x6 in as its default paper
+   (Printing preferences AND Printer properties → Advanced → Printing Defaults).
+   CSS cannot choose physical paper.
+3. `@page { size: 4in 6in; margin: 0 }` in the label page, which makes each page box
+   exactly one label and suppresses the browser header/footer. Keep it that way —
+   re-adding page margins brings the URL/date header back.
+
+Do not switch to a per-label `window.print()` loop: Chromium throttles repeated
+scripted prints and drops labels. `?test=1&silent=1` prints a single sample label
+for verifying the setup; `?pdf=1` renders without printing.

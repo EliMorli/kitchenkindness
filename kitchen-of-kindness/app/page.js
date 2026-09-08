@@ -4,6 +4,8 @@ import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { computeGroups, groupBadge } from '../lib/groups';
 import { formatAddress, formatNote } from '../lib/format';
+import { attachPauses, isDayPaused } from '../lib/pauses';
+import { toDateStr } from '../lib/weeks';
 
 // Families are loaded from Supabase - empty fallback if database is unavailable
 const fallbackFamilies = [];
@@ -107,7 +109,8 @@ export default function Home() {
       }
 
       if (data && data.length > 0) {
-        const formattedFamilies = data.map(f => ({
+        const withPauses = await attachPauses(supabase, data);
+        const formattedFamilies = withPauses.map(f => ({
           id: f.family_id,
           family_id: f.family_id,
           address: f.address,
@@ -116,7 +119,8 @@ export default function Home() {
           delivery_days: f.delivery_days || ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'],
           unit: f.unit || '',
           latitude: f.latitude ?? null,
-          longitude: f.longitude ?? null
+          longitude: f.longitude ?? null,
+          pauses: f.pauses || []
         }));
         setFamilies(formattedFamilies);
       }
@@ -320,7 +324,10 @@ export default function Home() {
 
   const getFamiliesForDate = (date) => {
     const dayName = dayNames[date.getDay()];
-    const list = families.filter(f => !f.delivery_days || f.delivery_days.includes(dayName));
+    const dateStr = toDateStr(date);
+    const list = families.filter(f =>
+      (!f.delivery_days || f.delivery_days.includes(dayName)) && !isDayPaused(f, dateStr)
+    );
     const groups = computeGroups(list);
     return list
       .map(f => ({ ...f, group: groups.get(f.family_id) ?? null }))

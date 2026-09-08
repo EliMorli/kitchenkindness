@@ -4,6 +4,8 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
 import { computeGroups, groupBadge, isPickup } from '../../lib/groups';
 import { formatAddress, formatNote, addressArea } from '../../lib/format';
+import { attachPauses, isDayPaused, isSaturdayPaused } from '../../lib/pauses';
+import { loadSpecialOrdersForDate, orderTitle } from '../../lib/weeks';
 
 const DELIVERY_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'];
 const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -20,6 +22,7 @@ export default function KitchenPage() {
   const [selectedDay, setSelectedDay] = useState(getDefaultDay);
   const [copiedFlash, setCopiedFlash] = useState(false);
   const [copiedChecklistFlash, setCopiedChecklistFlash] = useState(false);
+  const [specialWeeks, setSpecialWeeks] = useState([]);
 
   useEffect(() => {
     loadFamilies();
@@ -35,19 +38,50 @@ export default function KitchenPage() {
         .order('family_id', { ascending: true });
 
       if (error) throw error;
-      setFamilies(data || []);
+      setFamilies(await attachPauses(supabase, data || []));
     } catch (error) {
       console.error('Error loading families:', error);
     }
     setLoading(false);
   };
 
+  // The calendar date of the selected day name: today if the names match,
+  // otherwise the next occurrence of that weekday. Local time, no UTC shift.
+  const dateForSelectedDay = () => {
+    const target = dayNames.indexOf(selectedDay);
+    const d = new Date();
+    while (d.getDay() !== target) d.setDate(d.getDate() + 1);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  // Special-week orders that apply to the selected day.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!supabase) return;
+      try {
+        const weeks = await loadSpecialOrdersForDate(supabase, dateForSelectedDay());
+        if (!cancelled) setSpecialWeeks(weeks);
+      } catch (e) {
+        console.error('Error loading special orders:', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedDay]);
+
   const getFamiliesForDay = () => {
-    const list = families.filter(f => {
-      const inDays = !f.delivery_days || f.delivery_days.includes(selectedDay);
-      const shabbatOnThursday = selectedDay === 'Thursday' && f.saturday_meals;
-      return inDays || shabbatOnThursday;
-    });
+    const dateStr = dateForSelectedDay();
+    const list = families
+      .map(f => {
+        const inDays = !f.delivery_days || f.delivery_days.includes(selectedDay);
+        const deliversToday = inDays && !isDayPaused(f, dateStr);
+        const satToday = selectedDay === 'Thursday' && !!f.saturday_meals && !isSaturdayPaused(f, dateStr);
+        return { ...f, deliversToday, satToday };
+      })
+      .filter(f => f.deliversToday || f.satToday);
     const groups = computeGroups(list);
     return list
       .map(f => ({ ...f, group: groups.get(f.family_id) ?? null }))
@@ -76,24 +110,12 @@ export default function KitchenPage() {
     return { grouped, pickups, ungrouped };
   };
 
-  // The calendar date of the selected day name: today if the names match,
-  // otherwise the next occurrence of that weekday. Local time, no UTC shift.
-  const dateForSelectedDay = () => {
-    const target = dayNames.indexOf(selectedDay);
-    const d = new Date();
-    while (d.getDay() !== target) d.setDate(d.getDate() + 1);
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
-  };
-
   // WhatsApp-ready list of the day's deliveries, grouped: the admin copies
   // this and pastes it into the volunteers group chat.
   const buildWhatsAppList = (fams) => {
     const { grouped, pickups, ungrouped } = partitionForDay(fams);
     const familyLine = f => {
-      const sat = selectedDay === 'Thursday' && f.saturday_meals ? ' (+Sat)' : '';
+      const sat = f.satToday ? ' (+Sat)' : '';
       return `${f.family_id} \u2014 ${addressArea(f.address) || '\u2014'}${sat}`;
     };
     const lines = [`\u{1F372} Kitchen of Kindness \u2014 ${selectedDay} deliveries`, ''];
@@ -109,7 +131,9 @@ export default function KitchenPage() {
     }
     if (pickups.length) {
       lines.push(`*Pickup at kitchen*: ${pickups.map(f => f.family_id).join(', ')}`);
+      lines.push('');
     }
+    lines.push(...specialSection());
     return lines.join('\n').trim();
   };
 
@@ -119,7 +143,7 @@ export default function KitchenPage() {
   const buildChecklist = (fams) => {
     const { grouped, pickups, ungrouped } = partitionForDay(fams);
     const familyLine = f => {
-      const sat = selectedDay === 'Thursday' && f.saturday_meals ? ' (+Sat)' : '';
+      const sat = f.satToday ? ' (+Sat)' : '';
       return `${f.family_id} \u2014 ${addressArea(f.address) || '\u2014'}${sat}`;
     };
     const lines = [
@@ -141,7 +165,9 @@ export default function KitchenPage() {
     }
     if (pickups.length) {
       lines.push(`*Pickup at kitchen*: ${pickups.map(f => f.family_id).join(', ')}`);
+      lines.push('');
     }
+    lines.push(...specialSection());
     return lines.join('\n').trim();
   };
 
@@ -161,11 +187,23 @@ export default function KitchenPage() {
   const handleCopyChecklist = () =>
     copyToClipboard(buildChecklist(filteredFamilies), setCopiedChecklistFlash);
 
+  const specialOrders = specialWeeks.flatMap(w => w.orders.map(o => ({ ...o, weekTitle: `${w.emoji} ${w.title}` })));
+  const specialPeople = specialOrders.reduce((sum, o) => sum + (o.people_count || 0), 0);
+  const specialSection = () => {
+    const lines = [];
+    specialWeeks.forEach(w => {
+      lines.push(`*✨ ${w.emoji} ${w.title}* (${w.orders.length} ${w.orders.length === 1 ? 'box' : 'boxes'})`);
+      w.orders.forEach(o => lines.push(`${orderTitle(o)} — ${addressArea(o.address) || o.instructions || '—'}`));
+      lines.push('');
+    });
+    return lines;
+  };
+
   const todayStr = dayNames[new Date().getDay()];
   const filteredFamilies = getFamiliesForDay();
   const isThursday = selectedDay === 'Thursday';
-  const getsThursdayMeal = (f) => !f.delivery_days || f.delivery_days.includes('Thursday');
-  const getsSaturdayMeal = (f) => !!f.saturday_meals;
+  const getsThursdayMeal = (f) => !!f.deliversToday;
+  const getsSaturdayMeal = (f) => !!f.satToday;
   const totalPeople = filteredFamilies.reduce((sum, f) => sum + (f.people_count || 0), 0);
   const thursdayPeople = filteredFamilies
     .filter(getsThursdayMeal)
@@ -211,6 +249,9 @@ export default function KitchenPage() {
             </>
           ) : (
             <span className="kitchen-summary-item">{totalPeople} People</span>
+          )}
+          {specialOrders.length > 0 && (
+            <span className="kitchen-summary-item">+{specialOrders.length} special ({specialPeople} ppl)</span>
           )}
         </div>
       </header>
@@ -296,6 +337,47 @@ export default function KitchenPage() {
           )}
         </table>
       </div>
+
+      {specialWeeks.map(week => {
+        const total = week.orders.reduce((s, o) => s + (o.people_count || 0), 0);
+        return (
+          <div key={week.id} className="kitchen-special">
+            <h2 className="kitchen-special-title">{week.emoji} Special Week — {week.title}</h2>
+            <div className="kitchen-table-wrapper">
+              <table className="kitchen-table">
+                <thead>
+                  <tr>
+                    <th className="col-id">#</th>
+                    <th className="col-people">People</th>
+                    <th className="col-notes">Notes / Instructions</th>
+                    <th className="col-address">Address</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {week.orders.map((o, idx) => (
+                    <tr key={o.id} className={idx % 2 === 0 ? 'row-even' : 'row-odd'}>
+                      <td className={`col-id ${o.family_id == null ? 'col-id-text' : ''}`}>{orderTitle(o)}</td>
+                      <td className="col-people">{o.people_count || '-'}</td>
+                      <td className="col-notes">
+                        {[o.instructions, o.notes].filter(Boolean).map(formatNote).join(' — ') || '-'}
+                      </td>
+                      <td className="col-address">{o.address ? formatAddress(o.address, o.unit) : '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td className="col-id"><strong>Total</strong></td>
+                    <td className="col-people"><strong>{total}</strong></td>
+                    <td className="col-notes"></td>
+                    <td className="col-address"></td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

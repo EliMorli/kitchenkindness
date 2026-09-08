@@ -112,3 +112,68 @@ export async function loadDaysForWeek(supabase, weekId) {
     signups: signups.filter(s => s.day_id === d.id)
   }));
 }
+
+// ---- Special orders (extra deliveries attached to a special week) ----
+
+export async function loadOrdersForWeek(supabase, weekId) {
+  const { data, error } = await supabase
+    .from('volunteer_week_orders')
+    .select('*')
+    .eq('week_id', weekId)
+    .order('sort_order', { ascending: true })
+    .order('id', { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+// All orders for a set of weeks in one query, grouped by week id.
+export async function loadOrdersForWeeks(supabase, weekIds) {
+  const map = new Map(weekIds.map(id => [id, []]));
+  if (!weekIds.length) return map;
+  const { data, error } = await supabase
+    .from('volunteer_week_orders')
+    .select('*')
+    .in('week_id', weekIds)
+    .order('sort_order', { ascending: true })
+    .order('id', { ascending: true });
+  if (error) throw error;
+  (data || []).forEach(o => { if (map.has(o.week_id)) map.get(o.week_id).push(o); });
+  return map;
+}
+
+// Weeks whose date range includes `dateStr` (open or closed for sign-ups —
+// orders follow the dates), each with the orders that apply on that date
+// (delivery_date NULL = every day of the week).
+export async function loadSpecialOrdersForDate(supabase, dateStr) {
+  if (!supabase || !dateStr) return [];
+  const { data: weeks, error } = await supabase
+    .from('volunteer_weeks')
+    .select('*')
+    .lte('start_date', dateStr)
+    .gte('end_date', dateStr)
+    .order('start_date', { ascending: true });
+  if (error) throw error;
+  if (!weeks?.length) return [];
+  const { data: orders, error: oErr } = await supabase
+    .from('volunteer_week_orders')
+    .select('*')
+    .in('week_id', weeks.map(w => w.id))
+    .order('sort_order', { ascending: true })
+    .order('id', { ascending: true });
+  if (oErr) throw oErr;
+  return weeks
+    .map(w => ({
+      ...w,
+      orders: (orders || []).filter(o => o.week_id === w.id && (!o.delivery_date || o.delivery_date === dateStr))
+    }))
+    .filter(w => w.orders.length > 0);
+}
+
+// Display name for a special order: "#412" when linked to a family (with the
+// label as a suffix if one was given), else its label.
+export function orderTitle(order) {
+  if (order.family_id != null) {
+    return order.label ? `#${order.family_id} · ${order.label}` : `#${order.family_id}`;
+  }
+  return order.label || 'Special order';
+}
