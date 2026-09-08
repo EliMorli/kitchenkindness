@@ -241,6 +241,14 @@ export default function KitchenPage() {
           >
             {copiedChecklistFlash ? '\u2713 Copied!' : '\u2705 Copy checklist'}
           </button>
+          <button
+            className="kitchen-copy-btn"
+            onClick={() => window.open(`/admin/print-labels?date=${dateForSelectedDay()}&silent=1`, '_blank')}
+            disabled={filteredFamilies.length === 0 && specialOrders.length === 0}
+            title="Print this day's labels (regular + special orders). Silent from the kitchen shortcut; needs the admin login once in this browser."
+          >
+            🖨️ Print labels
+          </button>
           <span className="kitchen-summary-item">{filteredFamilies.length} Families</span>
           {isThursday ? (
             <>
