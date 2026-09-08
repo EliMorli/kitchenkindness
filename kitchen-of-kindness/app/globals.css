@@ -2207,3 +2207,13 @@ body {
   .week-edit-day { grid-template-columns: 1fr 1fr; }
   .week-form-day { grid-template-columns: 1fr 1fr; }
 }
+
+/* Printer setup help panel (admin Sign-ups tab) */
+.printer-setup { margin: 12px 0 18px; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 10px 16px; }
+.printer-setup summary { cursor: pointer; font-weight: 700; color: #1e293b; }
+.printer-setup ol { margin: 12px 0 4px 18px; display: flex; flex-direction: column; gap: 10px; color: #334155; font-size: 0.92rem; line-height: 1.45; }
+.printer-setup small { display: block; margin-top: 6px; color: #64748b; }
+.printer-setup-cmd { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+.printer-setup-cmd-name { font-weight: 700; min-width: 56px; }
+.printer-setup-cmd code { flex: 1; min-width: 240px; background: #f1f5f9; padding: 6px 8px; border-radius: 6px; font-size: 0.78rem; word-break: break-all; }
+.printer-setup-cmd button { padding: 6px 12px; border-radius: 6px; border: 1px solid #cbd5e1; background: #fff; cursor: pointer; font-weight: 600; font-size: 0.8rem; }

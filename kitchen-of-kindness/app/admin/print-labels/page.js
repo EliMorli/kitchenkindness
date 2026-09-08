@@ -27,10 +27,15 @@ function PrintLabelsContent() {
   const searchParams = useSearchParams();
   const dateStr = searchParams.get('date');
   const date = parseDateParam(dateStr);
+  // silent=1: opened from the admin "Print labels" button on the kitchen PC,
+  // where Chrome/Edge runs with --kiosk-printing (no dialog). Print at once,
+  // confirm, and close the tab so the admin lands back on the Sign-ups view.
+  const silent = searchParams.get('silent') === '1';
 
   const [families, setFamilies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [printTriggered, setPrintTriggered] = useState(false);
+  const [printStatus, setPrintStatus] = useState('idle'); // idle | printing | done
   const labelRefs = useRef([]);
 
   useEffect(() => {
@@ -108,13 +113,32 @@ function PrintLabelsContent() {
   }, [loading, labels.length]);
 
   useEffect(() => {
+    const onAfter = () => setPrintStatus('done');
+    window.addEventListener('afterprint', onAfter);
+    return () => window.removeEventListener('afterprint', onAfter);
+  }, []);
+
+  useEffect(() => {
     if (loading || printTriggered || labels.length === 0) return;
     const t = setTimeout(() => {
-      window.print();
       setPrintTriggered(true);
+      setPrintStatus('printing');
+      window.print();
     }, 400);
     return () => clearTimeout(t);
   }, [loading, labels.length, printTriggered]);
+
+  // In silent mode, once the job is handed to the printer, close the tab.
+  useEffect(() => {
+    if (!silent || printStatus !== 'done') return;
+    const t = setTimeout(() => window.close(), 2500);
+    return () => clearTimeout(t);
+  }, [silent, printStatus]);
+
+  const printAgain = () => {
+    setPrintStatus('printing');
+    window.print();
+  };
 
   if (!dateStr || !date) {
     return (
@@ -163,6 +187,9 @@ function PrintLabelsContent() {
           background: #f7f7f7;
         }
         .toolbar button:hover { background: #efefef; }
+        .toolbar.silent { border-left: 6px solid #0891b2; }
+        .toolbar.silent.done { border-left-color: #10b981; background: #ecfdf5; }
+        .toolbar.silent strong { font-size: 1.05rem; }
         .toolbar .hint { color: #555; font-size: 12px; max-width: 600px; }
         .label-page {
           width: 3.6in;
@@ -222,16 +249,40 @@ function PrintLabelsContent() {
         }
       `}</style>
 
-      <div className="toolbar no-print">
-        <strong>{formatFullDate(date)}</strong>
-        <span className="hint">{labels.length} label{labels.length === 1 ? '' : 's'}</span>
-        <button onClick={() => window.print()}>🖨️ Print again</button>
-        <button onClick={() => window.close()}>Close</button>
-        <span className="hint">
-          Sized for 4×6 in thermal labels (portrait). In the print dialog, set paper size to 4×6 and disable
-          headers/footers.
-        </span>
-      </div>
+      {silent ? (
+        <div className={`toolbar no-print silent ${printStatus}`}>
+          <strong>
+            {printStatus === 'done'
+              ? `✓ Sent ${labels.length} label${labels.length === 1 ? '' : 's'} to the printer`
+              : printStatus === 'printing'
+                ? `🖨️ Sending ${labels.length} label${labels.length === 1 ? '' : 's'} to the printer…`
+                : `Preparing ${labels.length} label${labels.length === 1 ? '' : 's'}…`}
+          </strong>
+          <span className="hint">{formatFullDate(date)}</span>
+          {printStatus === 'done' && (
+            <>
+              <button onClick={printAgain}>🖨️ Print again</button>
+              <button onClick={() => window.close()}>Close</button>
+              <span className="hint">This tab closes by itself in a moment.</span>
+            </>
+          )}
+          <span className="hint">
+            If a print dialog appeared, Chrome isn't in silent-print mode — open the admin from the
+            "Kitchen Admin (silent print)" shortcut. See Printer setup on the Sign-ups tab.
+          </span>
+        </div>
+      ) : (
+        <div className="toolbar no-print">
+          <strong>{formatFullDate(date)}</strong>
+          <span className="hint">{labels.length} label{labels.length === 1 ? '' : 's'}</span>
+          <button onClick={printAgain}>🖨️ Print again</button>
+          <button onClick={() => window.close()}>Close</button>
+          <span className="hint">
+            Sized for 4×6 in thermal labels (portrait). In the print dialog, set paper size to 4×6 and disable
+            headers/footers.
+          </span>
+        </div>
+      )}
 
       {labels.length === 0 ? (
         <div style={{ padding: 20 }}>No deliveries scheduled for {formatFullDate(date)}.</div>

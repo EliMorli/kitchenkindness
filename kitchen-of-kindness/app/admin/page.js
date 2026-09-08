@@ -96,6 +96,7 @@ export default function AdminPage() {
   });
   const [weekSaving, setWeekSaving] = useState(false);
   const [weekCopied, setWeekCopied] = useState(null);
+  const [printerSetupCopied, setPrinterSetupCopied] = useState(null);
   const [editingWeekId, setEditingWeekId] = useState(null);
   const [weekEdit, setWeekEdit] = useState(null);
 
@@ -1383,13 +1384,78 @@ export default function AdminPage() {
                       const yyyy = signupsDate.getFullYear();
                       const mm = String(signupsDate.getMonth() + 1).padStart(2, '0');
                       const dd = String(signupsDate.getDate()).padStart(2, '0');
-                      window.open(`/admin/print-labels?date=${yyyy}-${mm}-${dd}`, '_blank');
+                      window.open(`/admin/print-labels?date=${yyyy}-${mm}-${dd}&silent=1`, '_blank');
                     }}
+                    title="Sends the day's labels straight to the printer (no dialog when opened from the silent-print shortcut)"
                   >
                     🖨️ Print labels
                   </button>
+                  <button
+                    className="today-btn"
+                    onClick={() => {
+                      const yyyy = signupsDate.getFullYear();
+                      const mm = String(signupsDate.getMonth() + 1).padStart(2, '0');
+                      const dd = String(signupsDate.getDate()).padStart(2, '0');
+                      window.open(`/admin/print-labels?date=${yyyy}-${mm}-${dd}`, '_blank');
+                    }}
+                    title="Open the labels with the normal print dialog"
+                  >
+                    👁 Preview
+                  </button>
                   <button onClick={() => navigateSignupDay(1)}>Next Day →</button>
                 </div>
+
+                <details className="printer-setup">
+                  <summary>🖨️ Printer setup (one time, on the kitchen PC)</summary>
+                  <ol>
+                    <li>
+                      <strong>Make the JADENS the default printer.</strong> Windows Settings → Bluetooth &amp; devices →
+                      Printers &amp; scanners → turn <em>off</em> "Let Windows manage my default printer" → open the
+                      JADENS → <em>Set as default</em>.
+                    </li>
+                    <li>
+                      <strong>Set its paper to 4×6.</strong> Same screen → JADENS → <em>Printing preferences</em> → paper /
+                      page size <strong>4×6 in (102×152 mm)</strong>, orientation <strong>Portrait</strong> → OK. Silent
+                      printing uses these defaults.
+                    </li>
+                    <li>
+                      <strong>Create the silent-print shortcut.</strong> Right-click the desktop → New → Shortcut → paste
+                      one of these as the location, name it <em>Kitchen Admin (silent print)</em>:
+                      {[
+                        ['chrome', 'Chrome', '"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --kiosk-printing --user-data-dir="%LOCALAPPDATA%\\KitchenPrint" --new-window https://kitchenofkindness.app/admin'],
+                        ['edge', 'Edge', '"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --kiosk-printing --user-data-dir="%LOCALAPPDATA%\\KitchenPrint" --new-window https://kitchenofkindness.app/admin']
+                      ].map(([key, name, cmd]) => (
+                        <div key={key} className="printer-setup-cmd">
+                          <span className="printer-setup-cmd-name">{name}</span>
+                          <code>{cmd}</code>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                await navigator.clipboard.writeText(cmd);
+                                setPrinterSetupCopied(key);
+                                setTimeout(() => setPrinterSetupCopied(null), 1500);
+                              } catch (err) {
+                                console.error('Clipboard write failed:', err);
+                              }
+                            }}
+                          >
+                            {printerSetupCopied === key ? '✓ Copied' : 'Copy'}
+                          </button>
+                        </div>
+                      ))}
+                      <small>
+                        The shortcut opens its own browser profile, so silent printing works even if a normal Chrome window
+                        is already open. Log in to the admin once in that window; it stays logged in.
+                      </small>
+                    </li>
+                    <li>
+                      <strong>Print.</strong> Open the admin from that shortcut → Sign-ups → Day → <em>🖨️ Print labels</em>.
+                      The labels go straight to the printer, one per label, and the tab closes itself. Use
+                      <em> 👁 Preview</em> when you want the normal print dialog instead.
+                    </li>
+                  </ol>
+                </details>
 
                 <div className="today-slots">
                   {getSignupFamiliesForDate(signupsDate).map(family => {
