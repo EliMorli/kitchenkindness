@@ -115,10 +115,14 @@ Update the `generateDeliveryDates()` function in `app/page.js` to change the sta
 Labels are printed from `/admin/print-labels?date=YYYY-MM-DD` as ONE multi-page job
 (one 4x6 in page per label). Silent, dialog-free printing relies on three things:
 
-1. Chrome/Edge started from a shortcut with `--kiosk-printing` and its own
-   `--user-data-dir` (so the flag always applies and normal browsing never changes
-   the remembered printer). The admin's Sign-ups tab has a "Printer setup" panel with
-   copyable shortcut targets.
+1. Chrome/Edge started from a shortcut with `--kiosk-printing --no-first-run
+   --no-default-browser-check` and its own `--user-data-dir` under
+   `C:\Users\Public\KitchenPrint-<browser>` (so the flag always applies, normal
+   browsing never changes the remembered printer, and no environment variable has to
+   expand inside the shortcut arguments). The admin's Sign-ups tab has a "Printer
+   setup" panel with copyable shortcut targets. In Chromium `window.print()` blocks
+   until the preview closes and `afterprint` fires even on Cancel, so the page
+   measures how long the call blocked to tell a silent print from a dialog.
 2. The JADENS set as the Windows default printer with 4x6 in as its default paper
    (Printing preferences AND Printer properties → Advanced → Printing Defaults).
    CSS cannot choose physical paper.

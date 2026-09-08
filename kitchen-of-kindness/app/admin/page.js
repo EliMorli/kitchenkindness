@@ -7,9 +7,11 @@ import { computeGroups, groupBadge, isPickup, haversineKm } from '../../lib/grou
 import { formatAddress, formatNote } from '../../lib/format';
 import {
   loadDaysForWeek, dateRange, slugify, dayName as weekDayName, shortDate as weekShortDate,
-  activeSignups as weekActiveSignups, spotsLeft as weekSpotsLeft, loadOrdersForWeek, orderTitle, toDateStr
+  activeSignups as weekActiveSignups, spotsLeft as weekSpotsLeft, loadOrdersForWeeks, orderTitle, toDateStr, parseDate
 } from '../../lib/weeks';
-import { attachPauses, isDayPaused, activePauses, describePause, pauseWindow } from '../../lib/pauses';
+import {
+  attachPauses, isDayPaused, activePauses, describePause, pauseWindow, pauseOccurrences, nextDateForDay, anchorDayFor
+} from '../../lib/pauses';
 
 const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD;
 const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
@@ -148,7 +150,9 @@ export default function AdminPage() {
         ? `🖨️ Handed ${what} to the printer — watch it print.`
         : d.status === 'no-labels'
           ? 'No labels for that day.'
-          : '⚠️ Printing did not start — the window was not opened from the silent-print shortcut. See Printer setup.';
+          : d.status === 'dialog'
+            ? '⚠️ A print dialog opened, so this browser is not in silent-print mode. If you cancelled, nothing printed — see Printer setup.'
+            : '⚠️ Printing did not start — the window was not opened from the silent-print shortcut. See Printer setup.';
       setPrintToast({ text, kind: d.status === 'done' ? 'ok' : d.status === 'no-labels' ? 'info' : 'warn' });
       setTimeout(() => setPrintToast(null), 8000);
     };
@@ -292,15 +296,20 @@ export default function AdminPage() {
       }
       return next;
     });
+    if (name === 'saturday_meals' && checked) {
+      setPausePlan(pp => { const { saturday: _drop, ...rest } = pp; return rest; });
+    }
   };
 
   const handleDayToggle = (day) => {
-    setFormData(prev => ({
-      ...prev,
-      delivery_days: prev.delivery_days.includes(day)
-        ? prev.delivery_days.filter(d => d !== day)
-        : [...prev.delivery_days, day]
-    }));
+    setFormData(prev => {
+      const removing = prev.delivery_days.includes(day);
+      if (!removing) setPausePlan(pp => { const { [`day:${day}`]: _drop, ...rest } = pp; return rest; });
+      return {
+        ...prev,
+        delivery_days: removing ? prev.delivery_days.filter(d => d !== day) : [...prev.delivery_days, day]
+      };
+    });
   };
 
   const getNextFamilyId = () => {
@@ -375,35 +384,54 @@ export default function AdminPage() {
       // Temporary pauses: keep the day / Saturday in the saved schedule and
       // record a pause window instead, so it resumes on its own.
       const pausesToInsert = [];
+      const pausesToClear = []; // { kind, day_name } — replaced or made moot by this edit
       let deliveryDays = [...formData.delivery_days];
       let saturdayMeals = formData.saturday_meals;
       if (editingFamily) {
         removedDays.forEach(day => {
           const plan = planFor(`day:${day}`);
+          pausesToClear.push({ kind: 'day', day_name: day });
           if (plan.mode === 'temp') {
             deliveryDays.push(day);
             pausesToInsert.push({
               family_id: editingFamily.family_id,
               kind: 'day',
               day_name: day,
-              ...pauseWindow('day', day, Number(plan.weeks) || 1)
+              ...pauseWindow('day', day, Number(plan.weeks) || 1, !!plan.skipThisWeek)
             });
           }
         });
-        deliveryDays = ALL_DAYS.filter(d => deliveryDays.includes(d));
         if (removedSaturday) {
           const plan = planFor('saturday');
+          pausesToClear.push({ kind: 'saturday', day_name: null });
           if (plan.mode === 'temp') {
             saturdayMeals = true;
             pausesToInsert.push({
               family_id: editingFamily.family_id,
               kind: 'saturday',
               day_name: null,
-              ...pauseWindow('saturday', null, Number(plan.weeks) || 1)
+              ...pauseWindow('saturday', null, Number(plan.weeks) || 1, !!plan.skipThisWeek)
             });
           }
         }
+        // Volunteers who already claimed a delivery inside the pause window.
+        const orphaned = assignments.filter(a =>
+          a.family_id === editingFamily.family_id &&
+          pausesToInsert.some(pw => {
+            if (a.delivery_date < pw.start_date || a.delivery_date > pw.end_date) return false;
+            if (pw.kind === 'day') return dayNames[parseDate(a.delivery_date).getDay()] === pw.day_name;
+            return dayNames[parseDate(a.delivery_date).getDay()] === 'Thursday';
+          })
+        );
+        if (orphaned.length) {
+          const list = orphaned.map(a => `${a.volunteer_name} — ${formatDate(a.delivery_date)}`).join('\n');
+          if (!confirm(`Heads up: these volunteers already signed up for dates this pause skips:\n\n${list}\n\nThey won't see the delivery anymore. Save anyway? (You may want to let them know.)`)) {
+            setSaving(false);
+            return;
+          }
+        }
       }
+      deliveryDays = ALL_DAYS.filter(d => deliveryDays.includes(d));
 
       const payload = {
         address,
@@ -435,9 +463,25 @@ export default function AdminPage() {
       }
       if (error) throw error;
 
-      if (pausesToInsert.length) {
-        const { error: pErr } = await supabase.from('family_pauses').insert(pausesToInsert);
-        if (pErr) throw pErr;
+      if (pausesToClear.length || pausesToInsert.length) {
+        try {
+          for (const c of pausesToClear) {
+            let q = supabase.from('family_pauses').delete().eq('family_id', editingFamily.family_id).eq('kind', c.kind);
+            if (c.kind === 'day') q = q.eq('day_name', c.day_name);
+            const { error: dErr } = await q;
+            if (dErr) throw dErr;
+          }
+          if (pausesToInsert.length) {
+            const { error: pErr } = await supabase.from('family_pauses').insert(pausesToInsert);
+            if (pErr) throw pErr;
+          }
+        } catch (pauseErr) {
+          console.error('Error saving pause:', pauseErr);
+          await loadFamilies();
+          alert('The family was saved, but the pause could not be recorded. Open the family again, turn the day off, and save to retry.');
+          setSaving(false);
+          return;
+        }
       }
 
       await loadFamilies();
@@ -475,8 +519,23 @@ export default function AdminPage() {
     ? (editingFamily.delivery_days || ALL_DAYS).filter(d => !formData.delivery_days.includes(d))
     : [];
   const removedSaturday = !!(editingFamily && editingFamily.saturday_meals && !formData.saturday_meals);
-  const planFor = key => pausePlan[key] || { mode: 'temp', weeks: 1 };
-  const setPlan = (key, patch) => setPausePlan(prev => ({ ...prev, [key]: { ...planFor(key), ...patch } }));
+  const DEFAULT_PLAN = { mode: 'temp', weeks: 1, skipThisWeek: false };
+  const planFor = key => pausePlan[key] || DEFAULT_PLAN;
+  const setPlan = (key, patch) =>
+    setPausePlan(prev => ({ ...prev, [key]: { ...(prev[key] || DEFAULT_PLAN), ...patch } }));
+  // Human preview of what a temp pause will skip ("Tue Sep 8 – Tue Sep 22").
+  const previewPause = (kind, day, plan) => {
+    try {
+      const w = pauseWindow(kind, day, Number(plan.weeks) || 1, !!plan.skipThisWeek);
+      const occ = pauseOccurrences({ ...w, kind });
+      const fmt = d => `${weekDayName(d).slice(0, 3)} ${weekShortDate(d)}`;
+      const back = parseDate(occ[occ.length - 1]); back.setDate(back.getDate() + 7);
+      return `skips ${occ.length === 1 ? fmt(occ[0]) : `${fmt(occ[0])} – ${fmt(occ[occ.length - 1])}`} · back ${fmt(toDateStr(back))}`;
+    } catch { return ''; }
+  };
+  const anchorIsToday = (kind, day) => {
+    try { return nextDateForDay(anchorDayFor(kind, day)) === toDateStr(new Date()); } catch { return false; }
+  };
 
   const handleResumePause = async (pause) => {
     if (!supabase) return;
@@ -504,6 +563,8 @@ export default function AdminPage() {
         .eq('id', family.id);
 
       if (error) throw error;
+      // Pauses are keyed by family number, which getNextFamilyId can reuse.
+      await supabase.from('family_pauses').delete().eq('family_id', family.family_id);
       await loadFamilies();
     } catch (error) {
       console.error('Error deleting family:', error);
@@ -699,12 +760,14 @@ export default function AdminPage() {
         .order('start_date', { ascending: false });
       if (error) throw error;
       const withDays = await Promise.all(
-        (data || []).map(async w => ({
-          ...w,
-          days: await loadDaysForWeek(supabase, w.id),
-          orders: await loadOrdersForWeek(supabase, w.id)
-        }))
+        (data || []).map(async w => ({ ...w, days: await loadDaysForWeek(supabase, w.id), orders: [] }))
       );
+      try {
+        const ordersByWeek = await loadOrdersForWeeks(supabase, withDays.map(w => w.id));
+        withDays.forEach(w => { w.orders = ordersByWeek.get(w.id) || []; });
+      } catch (e) {
+        console.error('Error loading special orders:', e);
+      }
       setWeeks(withDays);
     } catch (error) {
       console.error('Error loading special weeks:', error);
@@ -967,6 +1030,7 @@ export default function AdminPage() {
   });
 
   const startOrder = (week, order) => {
+    if (orderForm?.dirty && !confirm('Discard the unsaved special order?')) return;
     setOrderForm(order
       ? {
           weekId: week.id, id: order.id,
@@ -978,28 +1042,42 @@ export default function AdminPage() {
       : emptyOrder(week.id));
   };
 
-  const setOrderField = (name, value) => setOrderForm(prev => ({ ...prev, [name]: value }));
+  const setOrderField = (name, value) => setOrderForm(prev => ({ ...prev, [name]: value, dirty: true }));
 
-  // Typing an existing family number fills in that family's details.
+  // Typing an existing family number fills in that family's details — and
+  // refills them if the number is corrected to a different family.
   const prefillOrderFromFamily = () => {
     const num = parseInt(orderForm?.family_id, 10);
     const fam = Number.isFinite(num) ? families.find(f => f.family_id === num) : null;
     if (!fam) return;
-    setOrderForm(prev => ({
-      ...prev,
-      address: prev.address || fam.address || '',
-      unit: prev.unit || fam.unit || '',
-      contact: prev.contact || fam.contact || '',
-      instructions: prev.instructions || fam.instructions || 'Leave at door',
-      people_count: prev.people_count || fam.people_count || 1
-    }));
+    setOrderForm(prev => {
+      if (prev.prefilledFrom === fam.family_id) return prev;
+      return {
+        ...prev,
+        prefilledFrom: fam.family_id,
+        address: fam.address || '',
+        unit: fam.unit || '',
+        contact: fam.contact || '',
+        instructions: fam.instructions || 'Leave at door',
+        people_count: fam.people_count || 1
+      };
+    });
   };
 
   const handleSaveOrder = async () => {
     if (!supabase || !orderForm) return;
     const famNum = orderForm.family_id === '' ? null : parseInt(orderForm.family_id, 10);
-    if (famNum == null && !orderForm.label.trim() && !orderForm.address.trim()) {
-      alert('Enter a family number, a name, or an address.');
+    const fam = Number.isFinite(famNum) ? families.find(f => f.family_id === famNum) : null;
+    if (famNum != null && !fam) {
+      alert(`There is no family #${orderForm.family_id}. Clear the number or fix it.`);
+      return;
+    }
+    if (!orderForm.address.trim() && !(fam && fam.address)) {
+      alert('Enter an address (or a family number that has one).');
+      return;
+    }
+    if (orderForm.delivery_date && parseDate(orderForm.delivery_date).getDay() > 4) {
+      alert('Pick a Sunday–Thursday delivery day — the kitchen does not run on Friday/Saturday.');
       return;
     }
     setOrderSaving(true);
@@ -1009,7 +1087,7 @@ export default function AdminPage() {
         family_id: Number.isFinite(famNum) ? famNum : null,
         label: orderForm.label.trim(),
         people_count: parseInt(orderForm.people_count, 10) || 1,
-        address: orderForm.address.trim(),
+        address: orderForm.address.trim() || (fam?.address || ''),
         unit: String(orderForm.unit || '').trim(),
         contact: orderForm.contact.trim(),
         instructions: orderForm.instructions.trim(),
@@ -1039,6 +1117,7 @@ export default function AdminPage() {
       await loadWeeks();
     } catch (error) {
       console.error('Error deleting special order:', error);
+      alert('Could not delete the special order. Please try again.');
     }
   };
 
@@ -1557,25 +1636,15 @@ export default function AdminPage() {
                   })()}
                   <button
                     className="today-btn"
-                    onClick={() => {
-                      const yyyy = signupsDate.getFullYear();
-                      const mm = String(signupsDate.getMonth() + 1).padStart(2, '0');
-                      const dd = String(signupsDate.getDate()).padStart(2, '0');
-                      window.open(`/admin/print-labels?date=${yyyy}-${mm}-${dd}&silent=1`, '_blank');
-                    }}
+                    onClick={() => window.open(`/admin/print-labels?date=${toDateStr(signupsDate)}&silent=1`, '_blank')}
                     title="Sends the day's labels straight to the printer (no dialog when opened from the silent-print shortcut)"
                   >
                     🖨️ Print labels
                   </button>
                   <button
                     className="today-btn"
-                    onClick={() => {
-                      const yyyy = signupsDate.getFullYear();
-                      const mm = String(signupsDate.getMonth() + 1).padStart(2, '0');
-                      const dd = String(signupsDate.getDate()).padStart(2, '0');
-                      window.open(`/admin/print-labels?date=${yyyy}-${mm}-${dd}`, '_blank');
-                    }}
-                    title="Open the labels with the normal print dialog"
+                    onClick={() => window.open(`/admin/print-labels?date=${toDateStr(signupsDate)}`, '_blank')}
+                    title="Shows the labels on screen first; Print there sends them to the printer"
                   >
                     👁 Preview
                   </button>
@@ -1598,23 +1667,27 @@ export default function AdminPage() {
                       outgoing COM port (JADENS "Windows Bluetooth" guide). Confirm Windows' own test page prints.
                     </li>
                     <li>
-                      <strong>Make the JADENS the default printer.</strong> Windows Settings → Bluetooth &amp; devices →
-                      Printers &amp; scanners → turn <em>off</em> "Let Windows manage my default printer" → open the
-                      JADENS → <em>Set as default</em>.
+                      <strong>Make the JADENS the default printer.</strong> Windows 11: Settings → Bluetooth &amp; devices →
+                      Printers &amp; scanners → under <em>Printer preferences</em> turn <em>off</em> "Let Windows manage my
+                      default printer" → click the JADENS → <em>Set as default</em>. Windows 10: Settings → Devices →
+                      Printers &amp; scanners → untick "Let Windows manage my default printer" (bottom) → click the JADENS →
+                      <em> Manage</em> → <em>Set as default</em>.
                     </li>
                     <li>
-                      <strong>Set its paper to 4×6 — in both places.</strong> Same screen → JADENS →
-                      <em> Printing preferences</em> → paper / page size <strong>4×6 in (100×150 / 102×152 mm)</strong>,
-                      <strong> Portrait</strong> → OK. Then JADENS → <em>Printer properties</em> → <em>Advanced</em> →
-                      <em> Printing Defaults…</em> → same paper size → OK. Silent printing uses these defaults; the web
-                      page can't pick the paper itself.
+                      <strong>Set its paper to 4×6 — in both places.</strong> JADENS → <em>Printing preferences</em> (Windows 10:
+                      under Manage) → <em>Page Setup</em> tab → under Paper, <em>Name</em>: choose <strong>4*6</strong> (some
+                      driver versions call it 100 x 150 mm or 4.00 x 6.00) → Orientation <strong>Portrait</strong> → OK. If
+                      there is no 4*6 entry: <em>New</em> → name it 4x6, width 4 in / 100 mm, height 6 in / 150 mm → OK.
+                      Then JADENS → <em>Printer properties</em> → <em>Advanced</em> → <em>Printing Defaults…</em> → same
+                      Page Setup → pick 4*6 there too (needs an administrator account). Silent printing uses these
+                      defaults; the web page can't pick the paper itself.
                     </li>
                     <li>
                       <strong>Create the silent-print shortcut.</strong> Right-click the desktop → New → Shortcut → paste
                       one of these as the location, name it <em>Kitchen Admin (silent print)</em>:
                       {[
-                        ['chrome', 'Chrome', '"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --kiosk-printing --user-data-dir="%LOCALAPPDATA%\\KitchenPrint" --new-window https://kitchenofkindness.app/admin'],
-                        ['edge', 'Edge', '"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --kiosk-printing --user-data-dir="%LOCALAPPDATA%\\KitchenPrint" --new-window https://kitchenofkindness.app/admin']
+                        ['chrome', 'Chrome', '"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --kiosk-printing --no-first-run --no-default-browser-check --user-data-dir="C:\\Users\\Public\\KitchenPrint-Chrome" --new-window https://kitchenofkindness.app/admin'],
+                        ['edge', 'Edge', '"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --kiosk-printing --no-first-run --no-default-browser-check --user-data-dir="C:\\Users\\Public\\KitchenPrint-Edge" --new-window https://kitchenofkindness.app/admin']
                       ].map(([key, name, cmd]) => (
                         <div key={key} className="printer-setup-cmd">
                           <span className="printer-setup-cmd-name">{name}</span>
@@ -1637,7 +1710,12 @@ export default function AdminPage() {
                       ))}
                       <small>
                         The shortcut opens its own browser profile, so silent printing works even if a normal Chrome window
-                        is already open. Log in to the admin once in that window; it stays logged in.
+                        is already open. Log in to the admin once in that window; it stays logged in. If Windows says
+                        "the file cannot be found": right-click your usual Chrome/Edge icon → Properties → copy its
+                        <em> Target</em> path and use it in place of the quoted path above (older Chrome installs live under
+                        C:\Program Files (x86)\Google\Chrome\Application\, a Chrome installed without admin rights under
+                        C:\Users\&lt;you&gt;\AppData\Local\Google\Chrome\Application\). The first launch may show the
+                        browser's own welcome screen — just close it; the page to log in to is the Kitchen admin.
                       </small>
                     </li>
                     <li>
@@ -1660,9 +1738,10 @@ export default function AdminPage() {
                     </li>
                     <li>
                       <strong>Daily use.</strong> From that shortcut: Sign-ups → Day → <em>🖨️ Print labels</em>. All of the
-                      day's labels go to the printer as one job, one label per page, and the tab closes itself. Use
-                      <em> 👁 Preview</em> when you want the normal print dialog instead. The browser can't see
-                      printer-side problems (offline, out of labels) — keep an eye on the printer.
+                      day's labels go to the printer as one job, one label per page, and the tab closes itself.
+                      <em> 👁 Preview</em> shows the labels on screen first (its Print button still prints without a dialog
+                      from the shortcut; open the admin in your normal browser when you want a real print dialog). The
+                      browser can't see printer-side problems (offline, out of labels) — keep an eye on the printer.
                     </li>
                   </ol>
                 </details>
@@ -2221,7 +2300,6 @@ export default function AdminPage() {
                               <span>{o.people_count} ppl</span>
                               <span>
                                 {o.address ? formatAddress(o.address, o.unit) : <span className="muted">no address</span>}
-                                {o.family_id == null && o.label && o.address ? <div className="muted">{o.label}</div> : null}
                               </span>
                               <span className="muted">
                                 {o.delivery_date ? `${weekDayName(o.delivery_date)} ${weekShortDate(o.delivery_date)}` : 'Every day'}
@@ -2242,10 +2320,15 @@ export default function AdminPage() {
                               <input type="text" placeholder="Name / label (if no family #)" value={orderForm.label} onChange={e => setOrderField('label', e.target.value)} />
                               <input type="number" min="1" max="50" placeholder="People" value={orderForm.people_count} onChange={e => setOrderField('people_count', e.target.value)} />
                               <select value={orderForm.delivery_date} onChange={e => setOrderField('delivery_date', e.target.value)}>
-                                <option value="">Every day of the week</option>
-                                {week.days.map(d => (
+                                <option value="">Every kitchen day of the week</option>
+                                {week.days.filter(d => parseDate(d.date).getDay() <= 4).map(d => (
                                   <option key={d.id} value={d.date}>{weekDayName(d.date)} {weekShortDate(d.date)}</option>
                                 ))}
+                                {orderForm.delivery_date && !week.days.some(d => d.date === orderForm.delivery_date) && (
+                                  <option value={orderForm.delivery_date}>
+                                    {weekDayName(orderForm.delivery_date)} {weekShortDate(orderForm.delivery_date)} (no longer in this week)
+                                  </option>
+                                )}
                               </select>
                               <input className="span2" type="text" placeholder="Address" value={orderForm.address} onChange={e => setOrderField('address', e.target.value)} />
                               <input type="text" placeholder="Unit / Apt #" value={orderForm.unit} onChange={e => setOrderField('unit', e.target.value)} />
@@ -2427,6 +2510,12 @@ export default function AdminPage() {
                       </button>
                     ))}
                   </div>
+                  {editingFamily && activePauses(editingFamily).length > 0 && (
+                    <small style={{ display: 'block', marginTop: 6, color: '#92400e' }}>
+                      ⏸ Currently paused: {activePauses(editingFamily).map(describePause).join(' · ')}. Turning a day off
+                      again replaces its pause.
+                    </small>
+                  )}
                   {removedDays.map(day => {
                     const plan = planFor(`day:${day}`);
                     return (
@@ -2441,6 +2530,13 @@ export default function AdminPage() {
                           />
                           week{Number(plan.weeks) === 1 ? '' : 's'} — then {day} comes back by itself
                         </label>
+                        {plan.mode === 'temp' && anchorIsToday('day', day) && (
+                          <label style={{ marginLeft: 24 }}>
+                            <input type="checkbox" checked={!!plan.skipThisWeek} onChange={e => setPlan(`day:${day}`, { skipThisWeek: e.target.checked })} />
+                            Today's delivery already went out — start next week
+                          </label>
+                        )}
+                        {plan.mode === 'temp' && <small style={{ display: 'block', marginLeft: 24, color: '#92400e' }}>{previewPause('day', day, plan)}</small>}
                         <label>
                           <input type="radio" checked={plan.mode === 'permanent'} onChange={() => setPlan(`day:${day}`, { mode: 'permanent' })} />
                           Remove {day} permanently
@@ -2485,6 +2581,13 @@ export default function AdminPage() {
                           />
                           week{Number(plan.weeks) === 1 ? '' : 's'} — then Saturday meals come back by itself
                         </label>
+                        {plan.mode === 'temp' && anchorIsToday('saturday', null) && (
+                          <label style={{ marginLeft: 24 }}>
+                            <input type="checkbox" checked={!!plan.skipThisWeek} onChange={e => setPlan('saturday', { skipThisWeek: e.target.checked })} />
+                            This week's Saturday bag already went out — start next week
+                          </label>
+                        )}
+                        {plan.mode === 'temp' && <small style={{ display: 'block', marginLeft: 24, color: '#92400e' }}>{previewPause('saturday', null, plan)}</small>}
                         <label>
                           <input type="radio" checked={plan.mode === 'permanent'} onChange={() => setPlan('saturday', { mode: 'permanent' })} />
                           Remove Saturday meals permanently

@@ -131,7 +131,9 @@ export default function KitchenPage() {
     }
     if (pickups.length) {
       lines.push(`*Pickup at kitchen*: ${pickups.map(f => f.family_id).join(', ')}`);
+      lines.push('');
     }
+    lines.push(...specialSection());
     return lines.join('\n').trim();
   };
 
@@ -163,7 +165,9 @@ export default function KitchenPage() {
     }
     if (pickups.length) {
       lines.push(`*Pickup at kitchen*: ${pickups.map(f => f.family_id).join(', ')}`);
+      lines.push('');
     }
+    lines.push(...specialSection());
     return lines.join('\n').trim();
   };
 
@@ -182,6 +186,18 @@ export default function KitchenPage() {
 
   const handleCopyChecklist = () =>
     copyToClipboard(buildChecklist(filteredFamilies), setCopiedChecklistFlash);
+
+  const specialOrders = specialWeeks.flatMap(w => w.orders.map(o => ({ ...o, weekTitle: `${w.emoji} ${w.title}` })));
+  const specialPeople = specialOrders.reduce((sum, o) => sum + (o.people_count || 0), 0);
+  const specialSection = () => {
+    const lines = [];
+    specialWeeks.forEach(w => {
+      lines.push(`*✨ ${w.emoji} ${w.title}* (${w.orders.length} ${w.orders.length === 1 ? 'box' : 'boxes'})`);
+      w.orders.forEach(o => lines.push(`${orderTitle(o)} — ${addressArea(o.address) || o.instructions || '—'}`));
+      lines.push('');
+    });
+    return lines;
+  };
 
   const todayStr = dayNames[new Date().getDay()];
   const filteredFamilies = getFamiliesForDay();
@@ -233,6 +249,9 @@ export default function KitchenPage() {
             </>
           ) : (
             <span className="kitchen-summary-item">{totalPeople} People</span>
+          )}
+          {specialOrders.length > 0 && (
+            <span className="kitchen-summary-item">+{specialOrders.length} special ({specialPeople} ppl)</span>
           )}
         </div>
       </header>
@@ -337,7 +356,7 @@ export default function KitchenPage() {
                 <tbody>
                   {week.orders.map((o, idx) => (
                     <tr key={o.id} className={idx % 2 === 0 ? 'row-even' : 'row-odd'}>
-                      <td className="col-id">{orderTitle(o)}</td>
+                      <td className={`col-id ${o.family_id == null ? 'col-id-text' : ''}`}>{orderTitle(o)}</td>
                       <td className="col-people">{o.people_count || '-'}</td>
                       <td className="col-notes">
                         {[o.instructions, o.notes].filter(Boolean).map(formatNote).join(' — ') || '-'}

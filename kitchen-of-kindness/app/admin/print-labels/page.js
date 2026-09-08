@@ -6,7 +6,7 @@ import { supabase } from '../../../lib/supabase';
 import { computeGroups, groupBadge } from '../../../lib/groups';
 import { formatAddress, formatNote } from '../../../lib/format';
 import { attachPauses, isDayPaused, isSaturdayPaused } from '../../../lib/pauses';
-import { loadSpecialOrdersForDate } from '../../../lib/weeks';
+import { loadSpecialOrdersForDate, toDateStr } from '../../../lib/weeks';
 
 // Labels: JADENS 4 in × 6 in thermal shipping labels (portrait).
 // Printer paper-size driver setting should match (any standard 4×6 thermal printer).
@@ -27,8 +27,10 @@ function formatFullDate(date) {
 
 function PrintLabelsContent() {
   const searchParams = useSearchParams();
-  const dateStr = searchParams.get('date');
-  const date = parseDateParam(dateStr);
+  const rawDate = searchParams.get('date');
+  const date = parseDateParam(rawDate);
+  // Canonical YYYY-MM-DD (the raw param may be unpadded); used for every lookup.
+  const dateStr = date ? toDateStr(date) : null;
   // silent=1: opened from the admin "Print labels" button on the kitchen PC,
   // where Chrome/Edge runs with --kiosk-printing (no dialog). Print at once,
   // confirm, and close the tab so the admin lands back on the Sign-ups view.
@@ -46,6 +48,9 @@ function PrintLabelsContent() {
   const [printTriggered, setPrintTriggered] = useState(false);
   // idle | printing | done | no-labels | timeout
   const [printStatus, setPrintStatus] = useState('idle');
+  const [jobId, setJobId] = useState(0);
+  const [warnings, setWarnings] = useState([]);
+  const afterPrintSeen = useRef(false);
   const labelRefs = useRef([]);
 
   // Same lightweight gate as /admin: the page lists family addresses.
@@ -71,14 +76,18 @@ function PrintLabelsContent() {
           .eq('active', true)
           .order('family_id', { ascending: true });
         if (error) throw error;
-        const withPauses = await attachPauses(supabase, data || []);
-        const weeks = dateStr ? await loadSpecialOrdersForDate(supabase, dateStr) : [];
-        if (!cancelled) {
-          setFamilies(withPauses);
-          setSpecialWeeks(weeks);
+        const withPauses = await attachPauses(supabase, data || []); // non-fatal inside
+        if (!cancelled) setFamilies(withPauses);
+        try {
+          const weeks = dateStr ? await loadSpecialOrdersForDate(supabase, dateStr) : [];
+          if (!cancelled) setSpecialWeeks(weeks);
+        } catch (e) {
+          console.error('Error loading special orders:', e);
+          if (!cancelled) setWarnings(w => [...w, 'Special-week orders could not be loaded — only regular labels are included.']);
         }
       } catch (e) {
         console.error('Error loading families:', e);
+        if (!cancelled) setWarnings(w => [...w, 'Families could not be loaded. Check the connection and try again.']);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -151,7 +160,8 @@ function PrintLabelsContent() {
   }
 
   useLayoutEffect(() => {
-    if (loading || labels.length === 0) return;
+    if (loading) return;
+    if (labels.length === 0) { setLayoutReady(true); return; }
     for (let i = 0; i < labels.length; i++) {
       const el = labelRefs.current[i];
       if (!el) continue;
@@ -172,10 +182,32 @@ function PrintLabelsContent() {
   }, [loading, labels.length]);
 
   useEffect(() => {
-    const onAfter = () => setPrintStatus('done');
+    const onAfter = () => {
+      afterPrintSeen.current = true;
+      setPrintStatus(prev => (prev === 'printing' ? 'done' : prev));
+    };
     window.addEventListener('afterprint', onAfter);
     return () => window.removeEventListener('afterprint', onAfter);
   }, []);
+
+  // One print job. In Chromium window.print() BLOCKS until the preview is
+  // dismissed and 'afterprint' fires even on Cancel, so a timer can't tell a
+  // silent kiosk print (returns in a second or two) from a human closing a
+  // dialog. Measure the block instead: a long block means a dialog was shown.
+  const runPrintJob = () => {
+    afterPrintSeen.current = false;
+    setJobId(j => j + 1);
+    setPrintStatus('printing');
+    const t0 = performance.now();
+    window.print();
+    const blockedMs = performance.now() - t0;
+    if (blockedMs > 8000) {
+      setPrintStatus('dialog');
+    } else if (afterPrintSeen.current) {
+      setPrintStatus('done');
+    }
+    // else: non-blocking browser — afterprint or the watchdog settles it.
+  };
 
   const reportToOpener = (status) => {
     try {
@@ -203,8 +235,7 @@ function PrintLabelsContent() {
       if (cancelled) return;
       requestAnimationFrame(() => {
         if (cancelled) return;
-        setPrintStatus('printing');
-        window.print();
+        runPrintJob();
       });
     });
     return () => { cancelled = true; };
@@ -221,7 +252,8 @@ function PrintLabelsContent() {
     return () => clearTimeout(t);
   }, [printStatus]);
 
-  // Silent mode: report back to the admin tab and close.
+  // Silent mode: report back to the admin tab and close (restarted per job so
+  // "Print again" gets a fresh countdown).
   useEffect(() => {
     if (!silent) return;
     if (printStatus === 'done' || printStatus === 'no-labels') {
@@ -233,13 +265,10 @@ function PrintLabelsContent() {
       }, printStatus === 'done' ? 2500 : 4000);
       return () => clearTimeout(t);
     }
-    if (printStatus === 'timeout') reportToOpener('timeout');
-  }, [silent, printStatus]);
+    if (printStatus === 'timeout' || printStatus === 'dialog') reportToOpener(printStatus);
+  }, [silent, printStatus, jobId]);
 
-  const printAgain = () => {
-    setPrintStatus('printing');
-    window.print();
-  };
+  const printAgain = () => runPrintJob();
 
   if (authed === false) {
     return (
@@ -305,6 +334,7 @@ function PrintLabelsContent() {
         .toolbar.silent.done { border-left-color: #10b981; background: #ecfdf5; }
         .toolbar.silent strong { font-size: 1.05rem; }
         .toolbar .hint { color: #555; font-size: 12px; max-width: 600px; }
+        .toolbar .hint.warn { color: #92400e; font-weight: 600; }
         .label-page {
           width: 4in;
           height: 6in;
@@ -329,6 +359,7 @@ function PrintLabelsContent() {
           letter-spacing: -1px;
         }
         .label-id-text { font-size: 30pt; line-height: 1.05; word-break: break-word; }
+        .label-week { font-size: 12pt; font-weight: 700; color: #333; }
         .label-meals {
           font-size: 36pt;
           font-weight: 700;
@@ -352,8 +383,8 @@ function PrintLabelsContent() {
         }
         .sat-badge {
           position: absolute;
-          top: 0.1in;
-          right: 0.1in;
+          top: 0.3in;
+          right: 0.3in;
           background: #c8102e;
           color: #fff;
           font-weight: 800;
@@ -373,16 +404,24 @@ function PrintLabelsContent() {
                 ? 'No labels for this day'
                 : printStatus === 'timeout'
                   ? '⚠️ Printing did not start'
+                  : printStatus === 'dialog'
+                    ? '⚠️ A print dialog was shown'
                   : printStatus === 'printing'
                     ? `🖨️ Sending ${labels.length} label${labels.length === 1 ? '' : 's'} to the printer…`
                     : `Preparing ${labels.length} label${labels.length === 1 ? '' : 's'}…`}
           </strong>
           <span className="hint">{testMode ? 'Test label' : formatFullDate(date)}</span>
-          {(printStatus === 'done' || printStatus === 'timeout') && (
-            <>
-              <button onClick={printAgain}>🖨️ Print again</button>
-              <button onClick={() => window.close()}>Close</button>
-            </>
+          {(printStatus === 'done' || printStatus === 'timeout' || printStatus === 'dialog') && (
+            <button onClick={printAgain}>🖨️ Print again</button>
+          )}
+          <button onClick={() => window.close()}>Close</button>
+          {warnings.map((w, i) => <span key={i} className="hint warn">⚠️ {w}</span>)}
+          {printStatus === 'dialog' && (
+            <span className="hint">
+              This browser is not in silent-print mode, so a print dialog opened. If you pressed Cancel, nothing
+              was printed. For dialog-free printing, close every window of this browser and reopen the admin from
+              the "Kitchen Admin (silent print)" shortcut (see Printer setup on the Sign-ups tab).
+            </span>
           )}
           {printStatus === 'done' && <span className="hint">Watch the printer — this tab closes by itself in a moment.</span>}
           {printStatus === 'no-labels' && <span className="hint">This tab closes by itself in a moment.</span>}
@@ -400,9 +439,10 @@ function PrintLabelsContent() {
           <span className="hint">{labels.length} label{labels.length === 1 ? '' : 's'}</span>
           <button onClick={printAgain}>🖨️ Print</button>
           <button onClick={() => window.close()}>Close</button>
+          {warnings.map((w, i) => <span key={i} className="hint warn">⚠️ {w}</span>)}
           <span className="hint">
-            Sized for 4×6 in thermal labels (portrait). In the print dialog, set paper size to 4×6 and disable
-            headers/footers.
+            Sized for 4×6 in thermal labels (portrait). In a normal browser, Print opens the print dialog: choose
+            the JADENS and 4×6 paper. From the silent-print shortcut it prints immediately.
           </span>
         </div>
       )}
@@ -423,11 +463,15 @@ function PrintLabelsContent() {
             >
               {isSat && <div className="sat-badge">SAT</div>}
               <div className="label-group-badge">
-                {label.kind === 'special' ? `✨ Special · ${label.weekTitle}` : groupBadge(label.group, f).text}
+                {label.kind === 'special' ? '✨ SPECIAL' : groupBadge(label.group, f).text}
               </div>
+              {label.kind === 'special' && <div className="label-week">{label.weekTitle}</div>}
               <div className={`label-id ${f.family_id == null ? 'label-id-text' : ''}`}>
                 {f.family_id != null ? `#${f.family_id}` : (f.label || 'Special')}
               </div>
+              {label.kind === 'special' && f.family_id != null && f.label && (
+                <div className="label-week">{f.label}</div>
+              )}
               <div className="label-meals">Meals: {f.people_count || '?'}</div>
               <div className="label-address">{formatAddress(f.address, f.unit)}</div>
               {f.contact && <div className="label-phone">📞 {f.contact}</div>}

@@ -2237,7 +2237,7 @@ body {
 /* Admin: special orders inside a week card */
 .week-orders { margin-top: 14px; border-top: 2px solid #e2e8f0; padding-top: 12px; }
 .week-orders h4 { margin: 0 0 8px; color: #1e293b; }
-.order-row { display: grid; grid-template-columns: 70px 60px 1fr 1fr auto; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid #f1f5f9; font-size: 0.9rem; }
+.order-row { display: grid; grid-template-columns: minmax(70px, max-content) 60px 1fr 1fr auto; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid #f1f5f9; font-size: 0.9rem; overflow-wrap: anywhere; }
 .order-row .muted { color: #64748b; font-size: 0.8rem; }
 .order-row button { border: 1px solid #cbd5e1; background: #fff; border-radius: 6px; padding: 4px 8px; cursor: pointer; font-size: 0.8rem; margin-left: 4px; }
 .order-row button.danger { color: #b91c1c; border-color: #fecaca; }
@@ -2245,4 +2245,5 @@ body {
 .order-form input, .order-form select { padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 8px; font-family: inherit; font-size: 0.9rem; width: 100%; }
 .order-form .span2 { grid-column: span 2; }
 .order-form .actions { grid-column: 1 / -1; display: flex; gap: 8px; justify-content: flex-end; }
-@media (max-width: 720px) { .order-row { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 720px) { .order-row { grid-template-columns: 1fr 1fr; } .order-form { grid-template-columns: 1fr; } .order-form .span2 { grid-column: 1 / -1; } }
+.kitchen-table .col-id.col-id-text { width: auto; text-align: left; font-size: 1rem; white-space: nowrap; }
