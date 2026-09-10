@@ -454,7 +454,10 @@ function PrintLabelsContent() {
         {labels.map((label, i) => {
           const f = label.family;
           const isSat = label.kind === 'saturday';
-          const notes = [f.instructions, f.notes].filter(Boolean).map(formatNote).join(' — ');
+          // Special-order notes hold the recipient's name — keep those off the
+          // printed label; only the delivery instruction is printed for them.
+          const notes = (label.kind === 'special' ? [f.instructions] : [f.instructions, f.notes])
+            .filter(Boolean).map(formatNote).join(' — ');
           return (
             <div
               key={`${f.id}-${label.kind}`}
