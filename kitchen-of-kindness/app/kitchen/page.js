@@ -367,7 +367,8 @@ export default function KitchenPage() {
                       <td className={`col-id ${o.family_id == null ? 'col-id-text' : ''}`}>{orderTitle(o)}</td>
                       <td className="col-people">{o.people_count || '-'}</td>
                       <td className="col-notes">
-                        {[o.instructions, o.notes].filter(Boolean).map(formatNote).join(' — ') || '-'}
+                        {/* Special-order notes hold the recipient's name — kitchen sees only the instruction. */}
+                        {[o.instructions].filter(Boolean).map(formatNote).join(' — ') || '-'}
                       </td>
                       <td className="col-address">{o.address ? formatAddress(o.address, o.unit) : '-'}</td>
                     </tr>
