@@ -8,7 +8,7 @@ import { attachPauses } from '../../lib/pauses';
 import { loadSpecialOrdersForDate, orderTitle } from '../../lib/weeks';
 import { buildDay } from '../../lib/day';
 import { buildWhatsAppList, buildChecklist } from '../../lib/whatsapp';
-import { markCopied, logStage } from '../../lib/kitchenDays';
+import { markCopied, markPrinted, logStage } from '../../lib/kitchenDays';
 
 const DELIVERY_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'];
 const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -25,6 +25,7 @@ export default function KitchenPage() {
   const [selectedDay, setSelectedDay] = useState(getDefaultDay);
   const [copiedFlash, setCopiedFlash] = useState(false);
   const [copiedChecklistFlash, setCopiedChecklistFlash] = useState(false);
+  const [printFlash, setPrintFlash] = useState(false);
   const [specialWeeks, setSpecialWeeks] = useState([]);
 
   useEffect(() => {
@@ -103,6 +104,15 @@ export default function KitchenPage() {
     }
   };
 
+  // Printing the labels moves the day to "Packing" on Kitchen Live right away;
+  // the print tab confirms with the exact label count when the job finishes.
+  const handlePrintLabels = () => {
+    window.open(`/admin/print-labels?date=${day.dateStr}&silent=1`, '_blank');
+    setPrintFlash(true);
+    setTimeout(() => setPrintFlash(false), 2500);
+    logStage(markPrinted, supabase, day.dateStr, day.totals.bags);
+  };
+
   const specialOrders = day.specialOrders;
   const specialPeople = day.totals.specialPeople;
 
@@ -146,11 +156,11 @@ export default function KitchenPage() {
           </button>
           <button
             className="kitchen-copy-btn"
-            onClick={() => window.open(`/admin/print-labels?date=${dateForSelectedDay()}&silent=1`, '_blank')}
+            onClick={handlePrintLabels}
             disabled={filteredFamilies.length === 0 && specialOrders.length === 0}
-            title="Print this day's labels (regular + special orders). Silent from the kitchen shortcut; needs the admin login once in this browser."
+            title="Print this day's labels (regular + special orders). Silent from the kitchen shortcut; needs the admin login once in this browser. Also marks the day as packing on Kitchen Live."
           >
-            🖨️ Print labels
+            {printFlash ? '✓ Sent to printer' : '🖨️ Print labels'}
           </button>
           <span className="kitchen-summary-item">{filteredFamilies.length} Families</span>
           {isThursday ? (

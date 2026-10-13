@@ -143,7 +143,9 @@ steps, stored per date in the `kitchen_days` table
 (`supabase-migrations/2026-10-13-add-kitchen-days.sql`):
 
 1. **Cooking**: the default; bags show as ghosts.
-2. **Packing**: recorded by itself when the label page prints (`printed_at`).
+2. **Packing**: recorded the moment someone presses **Print labels** (kitchen
+   page, admin panel or Kitchen Live), then confirmed with the label count when
+   the print tab finishes (`printed_at`, `printed_labels`).
 3. **Delivering**: recorded by itself the first time the list is copied for the
    volunteers' WhatsApp group, from Kitchen Live or the kitchen view (`copied_at`).
    Volunteers claim groups in WhatsApp, so this stands in for sign-ups.
@@ -152,5 +154,6 @@ steps, stored per date in the `kitchen_days` table
 The big **Copy list** button copies the same text as the kitchen view's Copy
 list and sends the vans out. Any step can be marked or undone from the
 "Today's run" tracker. The page updates live (Supabase Realtime) when another
-device prints or copies. `?date=YYYY-MM-DD` opens a given day. three.js loads
+device prints or copies; if the live connection drops it re-checks every 10
+seconds, and catches up as soon as it reconnects. `?date=YYYY-MM-DD` opens a given day. three.js loads
 only on this page.

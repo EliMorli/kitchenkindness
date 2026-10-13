@@ -12,6 +12,7 @@ import {
 import {
   attachPauses, isDayPaused, activePauses, describePause, pauseWindow, pauseOccurrences, nextDateForDay, anchorDayFor
 } from '../../lib/pauses';
+import { markPrinted, logStage } from '../../lib/kitchenDays';
 
 const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD;
 const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
@@ -1639,8 +1640,13 @@ export default function AdminPage() {
                   })()}
                   <button
                     className="today-btn"
-                    onClick={() => window.open(`/admin/print-labels?date=${toDateStr(signupsDate)}&silent=1`, '_blank')}
-                    title="Sends the day's labels straight to the printer (no dialog when opened from the silent-print shortcut)"
+                    onClick={() => {
+                      const date = toDateStr(signupsDate);
+                      window.open(`/admin/print-labels?date=${date}&silent=1`, '_blank');
+                      // Moves the day to "Packing" on Kitchen Live.
+                      logStage(markPrinted, supabase, date);
+                    }}
+                    title="Sends the day's labels straight to the printer (no dialog when opened from the silent-print shortcut). Also marks the day as packing on Kitchen Live."
                   >
                     🖨️ Print labels
                   </button>

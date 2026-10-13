@@ -13,7 +13,7 @@ import { loadSpecialOrdersForDate, longDate, parseDate, todayStr, orderTitle } f
 import { buildDay, defaultKitchenDate, stepKitchenDate } from '../../../lib/day';
 import { buildWhatsAppList, buildGroupText } from '../../../lib/whatsapp';
 import {
-  STAGES, stageIndex, loadKitchenDay, markCopied, markDelivered, markStage, undoStage, logStage
+  STAGES, stageIndex, loadKitchenDay, markPrinted, markCopied, markDelivered, markStage, undoStage, logStage
 } from '../../../lib/kitchenDays';
 import { groupColor } from '../../../lib/groups';
 import { addressArea } from '../../../lib/format';
@@ -131,6 +131,7 @@ export default function KitchenLivePage() {
   const modelSig = useRef('');
   const dateRef = useRef(null);
   const toastTimer = useRef(null);
+  const saving = useRef(0);
 
   useEffect(() => {
     document.title = 'Kitchen Live · Kitchen of Kindness';
@@ -238,12 +239,28 @@ export default function KitchenLivePage() {
           }
         } else if (payload.eventType === 'DELETE') refreshRow();
       })
-      .subscribe(status => setLive(status === 'SUBSCRIBED'));
+      .subscribe(status => {
+        const ok = status === 'SUBSCRIBED';
+        setLive(ok);
+        // (Re)connected: catch up on anything missed while it was down.
+        if (ok) refreshRow();
+      });
     return () => {
       supabase.removeChannel(channel);
       setLive(false);
     };
   }, [authed, dateStr, refreshRow]);
+
+  // Backup for a dropped live connection (phones drop it when the screen
+  // locks): re-check the day every few seconds, every minute while live, so
+  // a print or copy from the kitchen always shows up here.
+  useEffect(() => {
+    if (!authed || !dateStr) return undefined;
+    const id = setInterval(() => {
+      if (document.visibilityState === 'visible' && saving.current === 0) refreshRow();
+    }, live ? 60000 : 10000);
+    return () => clearInterval(id);
+  }, [authed, dateStr, live, refreshRow]);
 
   useEffect(() => {
     const onVisible = () => {
@@ -330,7 +347,9 @@ export default function KitchenLivePage() {
     }, 60);
   };
   const save = async (fn, ...args) => {
+    saving.current += 1;
     const ok = await logStage(fn, supabase, dateStr, ...args);
+    saving.current -= 1;
     if (!ok) showToast('Could not save that step. Check the connection and try again.', 'warn');
     refreshRow();
     return ok;
@@ -401,8 +420,14 @@ export default function KitchenLivePage() {
     await save(markDelivered);
   };
 
-  const openPrint = silent =>
+  // Printing moves the day to Packing right away, same as the kitchen page's
+  // Print labels button; the print tab confirms with the label count.
+  const openPrint = silent => {
     window.open(`/admin/print-labels?date=${dateStr}${silent ? '&silent=1' : ''}`, '_blank');
+    if (!silent) return;
+    patchRow({ printed_at: new Date().toISOString() });
+    save(markPrinted, day?.totals.bags);
+  };
 
   const go = dir => {
     setSheet(null);
@@ -563,7 +588,7 @@ export default function KitchenLivePage() {
               ? `Printed at ${fmtTime(row.printed_at)} · ${row.printed_labels ?? t.bags} labels`
               : 'Not printed yet'}
           </div>
-          <p className="kl-note">Printing on the kitchen computer moves the day to Packing by itself.</p>
+          <p className="kl-note">Pressing Print labels on the kitchen page, in the admin panel or here moves the day to Packing.</p>
           <div className="kl-row">
             <button type="button" className="kl-btn small" onClick={() => openPrint(true)}>{'\u{1F5A8}️'} Print labels</button>
             <button type="button" className="kl-btn small ghost" onClick={() => openPrint(false)}>Preview</button>
@@ -599,7 +624,7 @@ export default function KitchenLivePage() {
       const status = stepStatus(i);
       const when = s.field ? fmtTime(row?.[s.field]) : '';
       const auto = {
-        packing: 'This happens by itself when labels print on the kitchen computer.',
+        packing: 'This happens by itself when someone presses Print labels on the kitchen page (or here).',
         delivering: 'This happens by itself when you copy the list for WhatsApp.',
         delivered: 'Mark this when the volunteers have dropped off every bag.'
       }[s.key];
