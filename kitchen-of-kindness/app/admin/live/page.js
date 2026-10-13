@@ -17,8 +17,8 @@ import {
 } from '../../../lib/kitchenDays';
 import { groupColor } from '../../../lib/groups';
 import { addressArea } from '../../../lib/format';
+import { loginAdmin } from '../../../lib/adminLogin';
 
-const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD;
 const OTHER_COLOR = '#94a3b8';
 const BOX_COLOR = '#f59e0b';
 const PICKUP_COLOR = '#57534e';
@@ -500,18 +500,14 @@ export default function KitchenLivePage() {
           <h1>Kitchen Live</h1>
           <p>Enter the admin password</p>
           <form
-            onSubmit={e => {
+            onSubmit={async e => {
               e.preventDefault();
-              if (password === ADMIN_PASSWORD) {
-                try {
-                  localStorage.setItem('kok_admin_authenticated', 'true');
-                } catch (err) {
-                  // Private mode: stay logged in for this visit only.
-                }
+              const result = await loginAdmin(password);
+              if (result.ok) {
                 setAuthed(true);
                 setPasswordError('');
               } else {
-                setPasswordError('Incorrect admin password.');
+                setPasswordError(result.error);
               }
             }}
           >

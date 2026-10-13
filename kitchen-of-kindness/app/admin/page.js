@@ -12,8 +12,10 @@ import {
 import {
   attachPauses, isDayPaused, activePauses, describePause, pauseWindow, pauseOccurrences, nextDateForDay, anchorDayFor
 } from '../../lib/pauses';
+import { loginAdmin, serverSession } from '../../lib/adminLogin';
+import { geocodeUS, geocoderAvailable } from '../../lib/geocode';
+import MailTab from './MailTab';
 
-const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD;
 const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 const ALL_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'];
 const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -89,6 +91,7 @@ export default function AdminPage() {
   const [signupsWeekStart, setSignupsWeekStart] = useState(getInitialWeekStart);
   const [googleReady, setGoogleReady] = useState(false);
   const [googleFailed, setGoogleFailed] = useState(false);
+  const [mailCount, setMailCount] = useState(null);
   const addressInputRef = useRef(null);
   const [copiedFlash, setCopiedFlash] = useState(false);
   const [backfillProgress, setBackfillProgress] = useState(null);
@@ -130,6 +133,24 @@ export default function AdminPage() {
     }
     setLoading(false);
   }, []);
+
+  // Mail tab badge: pending requests + ones needing attention (only when this
+  // browser has a server session; otherwise the tab shows a password box).
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    (async () => {
+      try {
+        const session = await serverSession();
+        if (!session.authenticated) return;
+        const res = await fetch('/api/mail/requests?view=counts', { credentials: 'same-origin', cache: 'no-store' });
+        if (!res.ok) return;
+        const { counts } = await res.json();
+        setMailCount(counts?.badge || 0);
+      } catch {
+        // no badge
+      }
+    })();
+  }, [isAuthenticated]);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -269,14 +290,14 @@ export default function AdminPage() {
     setLoading(false);
   };
 
-  const handlePasswordSubmit = (e) => {
+  const handlePasswordSubmit = async (e) => {
     e.preventDefault();
-    if (passwordInput === ADMIN_PASSWORD) {
+    const result = await loginAdmin(passwordInput);
+    if (result.ok) {
       setIsAuthenticated(true);
-      localStorage.setItem('kok_admin_authenticated', 'true');
       setPasswordError('');
     } else {
-      setPasswordError('Incorrect admin password.');
+      setPasswordError(result.error);
     }
   };
 
@@ -354,29 +375,20 @@ export default function AdminPage() {
     let address = formData.address.trim();
     let latitude = formData.latitude;
     let longitude = formData.longitude;
-    if (latitude == null && !isPickup({ address }) && window.google?.maps?.Geocoder) {
-      try {
-        const geocoder = new window.google.maps.Geocoder();
-        const { results } = await geocoder.geocode({
-          address,
-          componentRestrictions: { country: 'US' }
-        });
-        const top = results?.[0];
-        if (top?.geometry?.location) {
-          if (confirm(
-            `Verified address found:\n\n${top.formatted_address}\n\n` +
-            'OK = save the verified address (family gets a delivery group).\n' +
-            'Cancel = keep exactly what you typed (no group).'
-          )) {
-            address = top.formatted_address;
-            latitude = top.geometry.location.lat();
-            longitude = top.geometry.location.lng();
-          }
-        } else {
-          console.warn('Geocode found no match for typed address:', address);
+    if (latitude == null && !isPickup({ address }) && geocoderAvailable()) {
+      const top = await geocodeUS(address);
+      if (top) {
+        if (confirm(
+          `Verified address found:\n\n${top.formatted_address}\n\n` +
+          'OK = save the verified address (family gets a delivery group).\n' +
+          'Cancel = keep exactly what you typed (no group).'
+        )) {
+          address = top.formatted_address;
+          latitude = top.lat;
+          longitude = top.lng;
         }
-      } catch (err) {
-        console.warn('Geocode failed for typed address:', address, err?.code || err);
+      } else {
+        console.warn('Geocode found no match for the typed address.');
       }
     }
 
@@ -452,6 +464,13 @@ export default function AdminPage() {
           : supabase.from('families').insert({ family_id: getNextFamilyId(), ...data });
 
       let { error } = await save(payload);
+      if (error && error.code === '23505' && !editingId) {
+        // That family number was just taken (e.g. a request approved in the
+        // Mail tab): reload the list and take the next free number.
+        const { data: latest } = await supabase.from('families').select('family_id').order('family_id', { ascending: false }).limit(1);
+        const next = Math.max(349, latest?.[0]?.family_id ?? 349) + 1;
+        ({ error } = await supabase.from('families').insert({ family_id: next, ...payload }));
+      }
       if (error && /unit/i.test(error.message || '')) {
         // families.unit column not migrated yet — save the rest, warn once.
         console.warn('families.unit column missing; saving without unit. Run the add-family-unit migration.');
@@ -1461,6 +1480,12 @@ export default function AdminPage() {
           onClick={() => setActiveTab('weeks')}
         >
           Special Weeks
+        </button>
+        <button
+          className={`tab-btn ${activeTab === 'mail' ? 'active' : ''}`}
+          onClick={() => setActiveTab('mail')}
+        >
+          Mail{mailCount ? <span className="tab-count">{mailCount}</span> : null}
         </button>
       </div>
 
@@ -2723,6 +2748,15 @@ export default function AdminPage() {
               )}
             </section>
           </>
+        )}
+
+        {activeTab === 'mail' && (
+          <MailTab
+            families={families}
+            googleReady={googleReady && !googleFailed}
+            onFamiliesChanged={loadFamilies}
+            onCounts={c => setMailCount(c?.badge || 0)}
+          />
         )}
       </div>
     </div>
