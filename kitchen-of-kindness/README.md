@@ -159,3 +159,64 @@ list and sends the vans out. Any step can be marked or undone from the
 device prints or copies; if the live connection drops it re-checks every 10
 seconds, and catches up as soon as it reconnects. `?date=YYYY-MM-DD` opens a given day. three.js loads
 only on this page.
+
+## Mail tab (`/admin` → Mail)
+
+Emails to the kitchen's Gmail become a review queue in the admin. Each new
+conversation from a real person gets an automatic "thank you, we'll get back to
+you" reply. Claude summarizes it and pulls out the household's details, and the
+request moves out of the inbox into the Gmail label **Kitchen Requests/Pending**.
+In the Mail tab the admin taps **Yes** (adds the family and sends the approval
+email) or **No** (filed in **Kitchen Requests/Declined**, no email). Both can be
+undone for 5 seconds. Emails that aren't requests stay in the inbox (shown under
+*Other*). Newsletters and automatic emails are ignored.
+
+How it runs:
+- **The sync:** `/api/mail/sync` runs every 5 minutes (Supabase `pg_cron`), when
+  the Mail tab opens, and on **Check now**. It reads new inbox mail, sends due
+  replies, writes summaries, sets Gmail labels, and sends approval emails.
+- **Modes** (Mail → ⚙ Settings):
+  - **Off:** nothing runs.
+  - **Shadow:** a practice run. It reads and summarizes only: nothing is sent,
+    Gmail isn't changed, and Yes adds nothing.
+  - **Live:** everything on. Only emails that arrive after switching to Live get
+    the automatic reply.
+- **Privacy:** the mail tables (`mail_requests`, `mail_messages`,
+  `mail_settings`) are private. RLS is on with no policies, so only the server
+  can read them, using `SUPABASE_SERVICE_ROLE_KEY`. Mail needs the admin password
+  on each device; the 🔒 button locks it again. Requester names stay in the Mail
+  tab and are never put into family notes or instructions, which print on labels.
+
+### Turning it on
+
+1. **Gmail app password.** On the kitchen's Google account (Google Account →
+   Security), turn on **2-Step Verification**, then open **App passwords**,
+   create one called "Kitchen app" and copy the 16 letters.
+2. **Claude API key.** At console.anthropic.com → API keys, create a key. Set a
+   monthly spend limit under Billing; each email costs a few cents.
+3. **Supabase service role key.** In the Supabase dashboard → Project Settings →
+   API, copy the `service_role` key (keep it secret).
+4. **Vercel → Settings → Environment Variables**, environment **Production only**:
+   - `GMAIL_USER`: the kitchen's Gmail address
+   - `GMAIL_APP_PASSWORD`: the 16 letters from step 1
+   - `ANTHROPIC_API_KEY`: from step 2
+   - `SUPABASE_SERVICE_ROLE_KEY`: from step 3
+   - `ADMIN_PASSWORD`: a **new** admin password (the old one was visible in
+     the website's code)
+   - `ADMIN_SESSION_SECRET` and `MAIL_CRON_SECRET`: two long random strings,
+     e.g. from `openssl rand -hex 32`
+
+   For **Preview** and **Development**, set `MAIL_DRY_RUN=1` instead, so test
+   deployments never send email. Then redeploy.
+5. **Delete `NEXT_PUBLIC_ADMIN_PASSWORD`** from Vercel and redeploy. From then on
+   the admin pages use the new password.
+6. **Supabase SQL editor.** Store the cron secret (the same value as
+   `MAIL_CRON_SECRET`):
+   `SELECT vault.create_secret('<MAIL_CRON_SECRET>', 'mail_cron_secret', 'Bearer for /api/mail/sync');`
+   Then run `supabase-migrations/2026-10-14-add-mail-sync-cron.sql`.
+7. **Admin → Mail → ⚙ Settings.** Choose **Shadow**, wait for a few emails and
+   check the summaries. Then choose **Live**.
+
+Local testing without touching anything real: `MAIL_FAKE=1 ADMIN_PASSWORD=test
+ADMIN_SESSION_SECRET=<anything long> npm run dev` uses a made-up inbox and an
+in-memory database. `npm test` runs the mail and session tests.
