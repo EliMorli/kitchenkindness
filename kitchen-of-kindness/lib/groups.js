@@ -57,6 +57,10 @@ export function computeGroups(families, groupSize = GROUP_SIZE) {
   return result;
 }
 
+// Same rotation as the .group-1 … .group-10 badge colors in globals.css.
+export const GROUP_COLORS = ['#0891b2', '#ea580c', '#7c3aed', '#0f766e', '#db2777', '#4338ca', '#b45309', '#be185d', '#475569', '#7c2d12'];
+export const groupColor = group => (group == null ? '#94a3b8' : GROUP_COLORS[(group - 1) % 10]);
+
 export function groupBadgeClass(group) {
   if (group == null) return 'group-badge ungrouped';
   const bucket = ((group - 1) % 10) + 1;
