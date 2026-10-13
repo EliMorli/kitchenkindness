@@ -133,3 +133,24 @@ Labels are printed from `/admin/print-labels?date=YYYY-MM-DD` as ONE multi-page 
 Do not switch to a per-label `window.print()` loop: Chromium throttles repeated
 scripted prints and drops labels. `?test=1&silent=1` prints a single sample label
 for verifying the setup; `?pdf=1` renders without printing.
+
+## Kitchen Live (`/admin/live`)
+
+A phone-first, game-style view of one kitchen day for the admin (same admin
+password). A small 3D island shows the kitchen, a bag pile per delivery group,
+a van per group and the houses around the ring road. The day moves through four
+steps, stored per date in the `kitchen_days` table
+(`supabase-migrations/2026-10-13-add-kitchen-days.sql`):
+
+1. **Cooking**: the default; bags show as ghosts.
+2. **Packing**: recorded by itself when the label page prints (`printed_at`).
+3. **Delivering**: recorded by itself the first time the list is copied for the
+   volunteers' WhatsApp group, from Kitchen Live or the kitchen view (`copied_at`).
+   Volunteers claim groups in WhatsApp, so this stands in for sign-ups.
+4. **Delivered**: the admin taps **Delivered** (`delivered_at`).
+
+The big **Copy list** button copies the same text as the kitchen view's Copy
+list and sends the vans out. Any step can be marked or undone from the
+"Today's run" tracker. The page updates live (Supabase Realtime) when another
+device prints or copies. `?date=YYYY-MM-DD` opens a given day. three.js loads
+only on this page.

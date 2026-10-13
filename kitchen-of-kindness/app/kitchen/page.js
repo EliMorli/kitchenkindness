@@ -2,10 +2,13 @@
 
 import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
-import { computeGroups, groupBadge, isPickup } from '../../lib/groups';
-import { formatAddress, formatNote, addressArea } from '../../lib/format';
-import { attachPauses, isDayPaused, isSaturdayPaused } from '../../lib/pauses';
+import { groupBadge } from '../../lib/groups';
+import { formatAddress, formatNote } from '../../lib/format';
+import { attachPauses } from '../../lib/pauses';
 import { loadSpecialOrdersForDate, orderTitle } from '../../lib/weeks';
+import { buildDay } from '../../lib/day';
+import { buildWhatsAppList, buildChecklist } from '../../lib/whatsapp';
+import { markCopied, logStage } from '../../lib/kitchenDays';
 
 const DELIVERY_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'];
 const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -72,145 +75,45 @@ export default function KitchenPage() {
     return () => { cancelled = true; };
   }, [selectedDay]);
 
-  const getFamiliesForDay = () => {
-    const dateStr = dateForSelectedDay();
-    const list = families
-      .map(f => {
-        const inDays = !f.delivery_days || f.delivery_days.includes(selectedDay);
-        const deliversToday = inDays && !isDayPaused(f, dateStr);
-        const satToday = selectedDay === 'Thursday' && !!f.saturday_meals && !isSaturdayPaused(f, dateStr);
-        return { ...f, deliversToday, satToday };
-      })
-      .filter(f => f.deliversToday || f.satToday);
-    const groups = computeGroups(list);
-    return list
-      .map(f => ({ ...f, group: groups.get(f.family_id) ?? null }))
-      .sort((a, b) => {
-        const ag = a.group ?? Infinity;
-        const bg = b.group ?? Infinity;
-        if (ag !== bg) return ag - bg;
-        return Number(a.family_id) - Number(b.family_id);
-      });
-  };
-
-  const partitionForDay = (fams) => {
-    const grouped = new Map();
-    const pickups = [];
-    const ungrouped = [];
-    fams.forEach(f => {
-      if (f.group != null) {
-        if (!grouped.has(f.group)) grouped.set(f.group, []);
-        grouped.get(f.group).push(f);
-      } else if (isPickup(f)) {
-        pickups.push(f);
-      } else {
-        ungrouped.push(f);
-      }
-    });
-    return { grouped, pickups, ungrouped };
-  };
-
-  // WhatsApp-ready list of the day's deliveries, grouped: the admin copies
-  // this and pastes it into the volunteers group chat.
-  const buildWhatsAppList = (fams) => {
-    const { grouped, pickups, ungrouped } = partitionForDay(fams);
-    const familyLine = f => {
-      const sat = f.satToday ? ' (+Sat)' : '';
-      return `${f.family_id} \u2014 ${addressArea(f.address) || '\u2014'}${sat}`;
-    };
-    const lines = [`\u{1F372} Kitchen of Kindness \u2014 ${selectedDay} deliveries`, ''];
-    for (const [g, list] of grouped) {
-      lines.push(`*Group ${g}* (${list.length} ${list.length === 1 ? 'bag' : 'bags'})`);
-      list.forEach(f => lines.push(familyLine(f)));
-      lines.push('');
-    }
-    if (ungrouped.length) {
-      lines.push('*Ungrouped*');
-      ungrouped.forEach(f => lines.push(familyLine(f)));
-      lines.push('');
-    }
-    if (pickups.length) {
-      lines.push(`*Pickup at kitchen*: ${pickups.map(f => f.family_id).join(', ')}`);
-      lines.push('');
-    }
-    lines.push(...specialSection());
-    return lines.join('\n').trim();
-  };
-
-  // Checklist variant: leads with a link to the live claim page (the volunteer
-  // sign-up view for this date), where volunteers check off the bags they take
-  // and everyone sees what's left.
-  const buildChecklist = (fams) => {
-    const { grouped, pickups, ungrouped } = partitionForDay(fams);
-    const familyLine = f => {
-      const sat = f.satToday ? ' (+Sat)' : '';
-      return `${f.family_id} \u2014 ${addressArea(f.address) || '\u2014'}${sat}`;
-    };
-    const lines = [
-      `\u{1F372} Kitchen of Kindness \u2014 ${selectedDay} deliveries`,
-      '',
-      '\u2705 *Tap here to claim your bags (live list):*',
-      `${window.location.origin}/?date=${dateForSelectedDay()}`,
-      ''
-    ];
-    for (const [g, list] of grouped) {
-      lines.push(`*Group ${g}* (${list.length} ${list.length === 1 ? 'bag' : 'bags'})`);
-      list.forEach(f => lines.push(familyLine(f)));
-      lines.push('');
-    }
-    if (ungrouped.length) {
-      lines.push('*Ungrouped*');
-      ungrouped.forEach(f => lines.push(familyLine(f)));
-      lines.push('');
-    }
-    if (pickups.length) {
-      lines.push(`*Pickup at kitchen*: ${pickups.map(f => f.family_id).join(', ')}`);
-      lines.push('');
-    }
-    lines.push(...specialSection());
-    return lines.join('\n').trim();
-  };
-
   const copyToClipboard = async (text, setFlash) => {
     try {
       await navigator.clipboard.writeText(text);
       setFlash(true);
       setTimeout(() => setFlash(false), 1500);
+      return true;
     } catch (err) {
       console.error('Clipboard write failed:', err);
+      return false;
     }
   };
 
-  const handleCopyList = () =>
-    copyToClipboard(buildWhatsAppList(filteredFamilies), setCopiedFlash);
+  // Copying the list is how volunteers get their groups (they answer in
+  // WhatsApp), so it also moves the day to "Delivering" on Kitchen Live.
+  const day = buildDay(families, specialWeeks, dateForSelectedDay());
 
-  const handleCopyChecklist = () =>
-    copyToClipboard(buildChecklist(filteredFamilies), setCopiedChecklistFlash);
-
-  const specialOrders = specialWeeks.flatMap(w => w.orders.map(o => ({ ...o, weekTitle: `${w.emoji} ${w.title}` })));
-  const specialPeople = specialOrders.reduce((sum, o) => sum + (o.people_count || 0), 0);
-  const specialSection = () => {
-    const lines = [];
-    specialWeeks.forEach(w => {
-      lines.push(`*✨ ${w.emoji} ${w.title}* (${w.orders.length} ${w.orders.length === 1 ? 'box' : 'boxes'})`);
-      w.orders.forEach(o => lines.push(`${orderTitle(o)} — ${addressArea(o.address) || o.instructions || '—'}`));
-      lines.push('');
-    });
-    return lines;
+  const handleCopyList = async () => {
+    if (await copyToClipboard(buildWhatsAppList(day), setCopiedFlash)) {
+      logStage(markCopied, supabase, day.dateStr);
+    }
   };
 
+  const handleCopyChecklist = async () => {
+    if (await copyToClipboard(buildChecklist(day, window.location.origin), setCopiedChecklistFlash)) {
+      logStage(markCopied, supabase, day.dateStr);
+    }
+  };
+
+  const specialOrders = day.specialOrders;
+  const specialPeople = day.totals.specialPeople;
+
   const todayStr = dayNames[new Date().getDay()];
-  const filteredFamilies = getFamiliesForDay();
-  const isThursday = selectedDay === 'Thursday';
+  const filteredFamilies = day.families;
+  const isThursday = day.isThursday;
   const getsThursdayMeal = (f) => !!f.deliversToday;
   const getsSaturdayMeal = (f) => !!f.satToday;
-  const totalPeople = filteredFamilies.reduce((sum, f) => sum + (f.people_count || 0), 0);
-  const thursdayPeople = filteredFamilies
-    .filter(getsThursdayMeal)
-    .reduce((sum, f) => sum + (f.people_count || 0), 0);
-  const saturdayPeople = filteredFamilies
-    .filter(getsSaturdayMeal)
-    .reduce((sum, f) => sum + (f.people_count || 0), 0);
+  const totalPeople = day.totals.people;
+  const thursdayPeople = day.totals.thuPeople;
+  const saturdayPeople = day.totals.satPeople;
 
   if (loading) {
     return (
@@ -229,7 +132,7 @@ export default function KitchenPage() {
             className="kitchen-copy-btn"
             onClick={handleCopyList}
             disabled={filteredFamilies.length === 0}
-            title="Copy the day's groups with a map link per family"
+            title="Copy the day's groups for the volunteers' WhatsApp group"
           >
             {copiedFlash ? '\u2713 Copied!' : '\u{1F4CB} Copy list'}
           </button>

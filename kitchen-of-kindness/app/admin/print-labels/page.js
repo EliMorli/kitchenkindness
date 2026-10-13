@@ -7,6 +7,7 @@ import { computeGroups, groupBadge } from '../../../lib/groups';
 import { formatAddress, formatNote } from '../../../lib/format';
 import { attachPauses, isDayPaused, isSaturdayPaused } from '../../../lib/pauses';
 import { loadSpecialOrdersForDate, toDateStr } from '../../../lib/weeks';
+import { markPrinted, logStage } from '../../../lib/kitchenDays';
 
 // Labels: JADENS 4 in × 6 in thermal shipping labels (portrait).
 // Printer paper-size driver setting should match (any standard 4×6 thermal printer).
@@ -51,6 +52,7 @@ function PrintLabelsContent() {
   const [jobId, setJobId] = useState(0);
   const [warnings, setWarnings] = useState([]);
   const afterPrintSeen = useRef(false);
+  const loggedJob = useRef(0);
   const labelRefs = useRef([]);
 
   // Same lightweight gate as /admin: the page lists family addresses.
@@ -267,6 +269,17 @@ function PrintLabelsContent() {
     }
     if (printStatus === 'timeout' || printStatus === 'dialog') reportToOpener(printStatus);
   }, [silent, printStatus, jobId]);
+
+  // Each finished print job moves the day to "Packing" on Kitchen Live. A
+  // dialog-closed job counts too: the operator almost always pressed Print,
+  // and the admin can undo the step if they cancelled.
+  useEffect(() => {
+    if (testMode || !dateStr || labels.length === 0) return;
+    if (printStatus !== 'done' && printStatus !== 'dialog') return;
+    if (loggedJob.current === jobId) return;
+    loggedJob.current = jobId;
+    logStage(markPrinted, supabase, dateStr, labels.length);
+  }, [printStatus, jobId, testMode, dateStr, labels.length]);
 
   const printAgain = () => runPrintJob();
 

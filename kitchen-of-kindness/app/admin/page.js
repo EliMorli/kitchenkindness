@@ -1412,7 +1412,10 @@ export default function AdminPage() {
       )}
       <header className="admin-header">
         <h1>Kitchen of Kindness - Admin</h1>
-        <a href="/" className="back-link">← Back to Sign-Up Page</a>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+          <a href="/admin/live" className="admin-live-link">🎮 Kitchen Live</a>
+          <a href="/" className="back-link">← Back to Sign-Up Page</a>
+        </div>
       </header>
 
       {/* Tab Navigation */}
