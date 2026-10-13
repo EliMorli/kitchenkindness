@@ -23,7 +23,11 @@ import { describeImapError } from './gmail.js';
 
 const DAY_MS = 86_400_000;
 const MAX_AUTO_SUMMARIES = 8; // re-summarize follow-ups up to this many emails
-const POISON_RETRIES = 3; // an email that can't be saved this many times is skipped
+const POISON_RETRIES = 3; // an email the database rejects this many times is skipped
+// Any other error that one email keeps causing: skipped after this many runs
+// spread over at least this long (a short outage never skips anything).
+const STUCK_RETRIES = 10;
+const STUCK_MS = 6 * 3_600_000;
 
 // Where a request's conversation should sit in Gmail.
 export function labelTarget(r) {
@@ -96,6 +100,7 @@ export async function runSync({
   const noReplyList = parseNoReplyList(settings.no_reply_senders);
   let imapOk = false;
   let smtpBlocked = false;
+  let sentCheckWarned = false;
   let fatal = '';
   let finished = false;
 
@@ -210,7 +215,8 @@ export async function runSync({
     let req = await store.requestByThread(m.threadId);
     let related = null;
     if (!req) {
-      const linked = await store.requestForReplyIds(e.replyIds);
+      // Only a hint: a lookup that fails is treated as no match.
+      const linked = await store.requestForReplyIds(e.replyIds).catch(() => null);
       if (linked && joinsRequest(linked, row.subject)) req = linked;
       else if (linked) related = linked.id;
     }
@@ -299,9 +305,14 @@ export async function runSync({
     let lastOk = null;
     let complete = true;
     // Strikes against one email (by UID; reset when Gmail renumbers).
+    const noFail = { uid: null, count: 0, since: null };
     let fail = sameValidity
-      ? { uid: settings.inbox_fail_uid == null ? null : Number(settings.inbox_fail_uid), count: settings.inbox_fail_count || 0 }
-      : { uid: null, count: 0 };
+      ? {
+          uid: settings.inbox_fail_uid == null ? null : Number(settings.inbox_fail_uid),
+          count: settings.inbox_fail_count || 0,
+          since: settings.inbox_fail_since || null
+        }
+      : noFail;
     for (const m of res.messages) {
       if (timeLeft() < 15_000) {
         complete = false;
@@ -313,20 +324,21 @@ export async function runSync({
           report.read += 1;
         }
         lastOk = m.uid;
-        if (fail.uid === m.uid) fail = { uid: null, count: 0 };
+        if (fail.uid === m.uid) fail = noFail;
       } catch (err) {
-        if (dataError(err)) {
-          const count = fail.uid === m.uid ? fail.count + 1 : 1;
-          fail = { uid: m.uid, count };
-          if (count >= POISON_RETRIES) {
-            try {
-              await skipUnreadable(m);
-              lastOk = m.uid;
-              fail = { uid: null, count: 0 };
-              continue;
-            } catch {
-              // the database itself is failing: stop and retry next run
-            }
+        const same = fail.uid === m.uid;
+        fail = { uid: m.uid, count: same ? fail.count + 1 : 1, since: same && fail.since ? fail.since : iso() };
+        const stuck = dataError(err)
+          ? fail.count >= POISON_RETRIES
+          : fail.count >= STUCK_RETRIES && ageMs(fail.since, now().getTime()) >= STUCK_MS;
+        if (stuck) {
+          try {
+            await skipUnreadable(m);
+            lastOk = m.uid;
+            fail = noFail;
+            continue;
+          } catch {
+            // the database itself is failing: stop and retry next run
           }
         }
         complete = false;
@@ -339,7 +351,8 @@ export async function runSync({
       inbox_uidvalidity: res.validity,
       inbox_last_uid: cursor,
       inbox_fail_uid: fail.uid,
-      inbox_fail_count: fail.count
+      inbox_fail_count: fail.count,
+      inbox_fail_since: fail.since
     });
     report.more = res.more || !complete;
   }
@@ -448,7 +461,6 @@ export async function runSync({
   async function reconcileClaims(prefix) {
     const nowMs = now().getTime();
     const before = new Date(nowMs - LIMITS.staleClaimMinutes * 60_000).toISOString();
-    let warned = false;
     for (const r of await store.listStaleClaims(prefix, before)) {
       let found = null;
       if (imapOk) {
@@ -460,8 +472,8 @@ export async function runSync({
         }
       }
       if (found === null) {
-        if (!warned) report.errors.push('Could not check Sent Mail for an email that may not have gone out. It will be checked again.');
-        warned = true;
+        if (!sentCheckWarned) report.errors.push('Could not check Sent Mail for an email that may not have gone out. It will be checked again.');
+        sentCheckWarned = true;
         if (ageMs(r[`${prefix}_claimed_at`], nowMs) < LIMITS.claimCheckHours * 3_600_000) continue;
       }
       const attempts = r[`${prefix}_attempts`] || 1;

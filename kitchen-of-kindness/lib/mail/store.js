@@ -33,9 +33,14 @@ export function createStore(db) {
     async messageCount(requestId) {
       return (await db.select('mail_messages', { eq: { request_id: requestId }, columns: 'id', limit: 1000 })).length;
     },
+    // (Leaving out conversations that are another request's own.)
     async threadsFor(requestId) {
       const rows = await db.select('mail_messages', { eq: { request_id: requestId }, columns: 'gmail_thrid', limit: 1000 });
-      return [...new Set(rows.map(m => m.gmail_thrid).filter(Boolean))];
+      const ids = [...new Set(rows.map(m => m.gmail_thrid).filter(Boolean))];
+      if (!ids.length) return ids;
+      const owners = await db.select('mail_requests', { in: { gmail_thrid: ids }, columns: 'id,gmail_thrid', limit: 1000 });
+      const others = new Set(owners.filter(o => o.id !== requestId).map(o => o.gmail_thrid));
+      return ids.filter(t => !others.has(t));
     },
     // In small batches: one Supabase response is capped at 1000 rows.
     async messagesForMany(ids) {
@@ -48,8 +53,10 @@ export function createStore(db) {
     },
     // A reply that Gmail filed as a new conversation (e.g. a changed
     // subject): find the request whose emails it answers.
+    // Only plain <id@host> values, and a few of them: these come from the
+    // email and go into a database filter.
     async requestForReplyIds(ids) {
-      const wanted = [...new Set((ids || []).filter(Boolean))].slice(0, 30);
+      const wanted = [...new Set((ids || []).filter(id => /^<[^\s"(),\\]{1,250}>$/.test(id)))].slice(-10);
       if (!wanted.length) return null;
       const msgs = await db.select('mail_messages', { in: { message_id_header: wanted }, columns: 'request_id', limit: 5 });
       const known = msgs.find(m => m.request_id);

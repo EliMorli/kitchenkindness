@@ -71,6 +71,9 @@ export function parseAuthResults(value) {
       else if (ch === '"') inQuote = false;
       else tok += ch;
     } else if (depth > 0) {
+      // Gmail repeats the sender's envelope address in its comments; a quote
+      // there could hide a ')' that ends the comment early. Don't trust it.
+      if (ch === '"') return null;
       if (ch === '\\') i += 1;
       else if (ch === '(') depth += 1;
       else if (ch === ')') depth -= 1;

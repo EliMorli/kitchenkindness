@@ -24,6 +24,9 @@ const UNDO_MS = 5000;
 const NO_ITEMS = []; // one stable empty list (a new [] each render loops the effects)
 const STILL_CHECKING = 'Still checking the address on the map. Try again in a moment.';
 const OPEN = ['new', 'pending', 'other']; // not decided yet
+// Decisions that couldn't be saved because the session ended, kept when the
+// tab is left so they come back (still undoable) when Mail is opened again.
+let heldDecisions = [];
 const IDLE_SYNC_MS = 15000;
 const POLL_MS = 60000;
 const INSTRUCTION_OPTIONS = ['Leave at door', 'Ring doorbell', 'Call when arrive', 'Hand to resident'];
@@ -85,19 +88,19 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
   const [cardErrors, setCardErrors] = useState({});
   const [geo, setGeo] = useState({});
   const [editingAddress, setEditingAddress] = useState(null);
-  const [queue, setQueue] = useState([]);
-  const [hidden, setHidden] = useState(() => new Set());
+  const [queue, setQueue] = useState(() => heldDecisions);
+  const [hidden, setHidden] = useState(() => new Set(heldDecisions.map(e => e.id)));
   const [justApproved, setJustApproved] = useState([]);
   const [toast, setToast] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showEmail, setShowEmail] = useState({});
   const [flushing, setFlushing] = useState(false);
   const timers = useRef(new Map());
-  const entries = useRef(new Map());
+  const entries = useRef(new Map(heldDecisions.map(e => [e.key, e])));
   // Decisions being sent right now, and whether sending is paused (the
   // session ran out: they wait, still undoable, until the next login).
   const inflight = useRef(new Set());
-  const paused = useRef(false);
+  const paused = useRef(heldDecisions.length > 0);
   const locking = useRef(false);
   const settingsDraft = useRef(null);
   const idleTimer = useRef(null);
@@ -424,9 +427,15 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
     for (const key of [...entries.current.keys()]) undo(key);
   }, [undo]);
 
+  useEffect(() => {
+    heldDecisions = [];
+  }, []);
+
   // Leaving the tab: send whatever is still waiting rather than dropping it.
+  // Ones held back by an ended session are kept for the next visit.
   useEffect(
     () => () => {
+      heldDecisions = [...entries.current.values()].filter(e => !timers.current.has(e.key));
       for (const [key, t] of timers.current) {
         clearTimeout(t);
         const entry = entries.current.get(key);
@@ -633,7 +642,14 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
           <button type="button" className="mail-btn" onClick={() => runSync(false)} disabled={syncing}>
             {syncing ? 'Checking…' : '↻ Check now'}
           </button>
-          <button type="button" className="mail-btn" onClick={() => setSettingsOpen(o => !o)}>
+          <button
+            type="button"
+            className="mail-btn"
+            onClick={() => {
+              if (settingsOpen) settingsDraft.current = null; // closed on purpose: drop unsaved edits
+              setSettingsOpen(o => !o);
+            }}
+          >
             ⚙ Settings
           </button>
           <button type="button" className="mail-btn" title="Lock Mail on this device" onClick={lockMail} disabled={flushing}>
@@ -1086,17 +1102,13 @@ function MailSettings({ onSaved, onUnauthorized, draft, showToast }) {
     if (!r.ok) return setLoadError(r.data?.message || 'Could not load the settings.');
     setData(r.data);
     setForm(draft.current || r.data.settings);
-    draft.current = null;
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     loadSettings();
   }, [loadSettings]);
 
-  const loggedOut = () => {
-    draft.current = form;
-    onUnauthorized();
-  };
+  const loggedOut = () => onUnauthorized();
 
   if (loadError) {
     return (
@@ -1109,7 +1121,13 @@ function MailSettings({ onSaved, onUnauthorized, draft, showToast }) {
     );
   }
   if (!form) return <div className="mail-settings">Loading settings…</div>;
-  const set = patch => setForm(f => ({ ...f, ...patch }));
+  // Unsaved edits live in MailTab's ref too, so a "log in again" keeps them.
+  const set = patch =>
+    setForm(f => {
+      const next = { ...f, ...patch };
+      draft.current = next;
+      return next;
+    });
 
   const save = async () => {
     if (form.mode === 'live' && data.settings.mode !== 'live') {
@@ -1127,6 +1145,7 @@ function MailSettings({ onSaved, onUnauthorized, draft, showToast }) {
       showToast(r.data?.message || 'Could not save the settings.', 'warn');
       return;
     }
+    draft.current = null;
     setData(d => ({ ...d, settings: r.data.settings, sync: r.data.sync }));
     onSaved?.(r.data.sync);
     showToast('Settings saved', 'ok');

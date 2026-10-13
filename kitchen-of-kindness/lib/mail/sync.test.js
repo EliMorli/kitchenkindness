@@ -628,3 +628,62 @@ test('Mail badge counts a long pending conversation once', async () => {
   assert.equal(c.attention, 1);
   assert.equal(c.badge, 1);
 });
+
+test('an odd reply header can never stop the inbox', async () => {
+  const w = createFakeWorld({ emails: [] });
+  w.gmail.deliver({
+    thread: 'g', from: 'Bob <bob@example.com>', subject: 'Meals', body: 'food please',
+    inReplyTo: '<abc@x.org> (Bob\'s message of "Tue, 13 Oct 2026 10:00:00")'
+  });
+  w.gmail.deliver({ thread: 'rosa', from: 'Rosa <rosa@example.com>', subject: 'Help', body: 'food please' });
+  const select = w.db.select;
+  w.db.select = async (table, f = {}) => {
+    if (f.in?.message_id_header?.some(v => /[" ]/.test(v))) throw Object.assign(new Error('failed to parse filter'), { code: 'PGRST100' });
+    return select(table, f);
+  };
+  const r = await run(w);
+  assert.equal(r.newRequests, 2);
+  assert.ok(byThread(w, 'rosa'));
+});
+
+test('an email that keeps failing for another reason is skipped only after many runs over hours', async () => {
+  let t = Date.now();
+  const now = () => new Date(t);
+  const w = createFakeWorld({ emails: [], now });
+  w.gmail.deliver({ thread: 'x', from: 'X <x@example.com>', subject: 'X', body: 'food please' });
+  w.gmail.deliver({ thread: 'y', from: 'Y <y@example.com>', subject: 'Y', body: 'food please' });
+  const xId = w.gmail.inbox[0].emailId;
+  const insert = w.db.insert;
+  w.db.insert = async (table, row, opts) => {
+    if (table === 'mail_messages' && row.gmail_msgid === xId && row.automated_reason !== 'unreadable') throw new Error('fetch failed');
+    return insert(table, row, opts);
+  };
+  for (let i = 0; i < 10; i++) {
+    await run(w, { now });
+    t += 5 * 60_000;
+  }
+  assert.equal(byThread(w, 'y'), undefined); // 10 runs in under an hour: nothing skipped
+  t += 6 * 3_600_000;
+  await run(w, { now });
+  assert.ok(byThread(w, 'y'));
+  assert.equal(byThread(w, 'x').needs_attention, true);
+});
+
+test('a conversation that is another request’s own keeps that request’s label', async () => {
+  const w = createFakeWorld({ emails: [] });
+  w.gmail.deliver({ thread: 't1', from: 'Ana <ana@example.com>', subject: 'Meals', body: 'food please' });
+  await run(w);
+  const ack = w.smtp.outbox[0];
+  w.gmail.deliver({ thread: 't2', from: 'Ana <ana@example.com>', subject: 'Re: Meals', body: 'more', inReplyTo: ack.messageId });
+  await run(w);
+  const r1 = byThread(w, 't1');
+  await w.store.approve(r1.id, { address: '1 Main St', people_count: 2, delivery_days: ['Monday'] }, false);
+  await run(w);
+  // A later email in t2 after the approval becomes its own request there.
+  await w.db.insert('mail_requests', { gmail_thrid: w.gmail.threadId('t2'), status: 'pending', kind: 'request', gmail_dirty: true });
+  await run(w);
+  await w.store.updateRequest(r1.id, { needs_attention: true, gmail_dirty: true });
+  await run(w);
+  assert.ok(w.gmail.labels.get(w.gmail.threadId('t2')).has('Kitchen Requests/Pending'));
+  assert.ok(!w.gmail.labels.get(w.gmail.threadId('t2')).has('Kitchen Requests/Approved'));
+});

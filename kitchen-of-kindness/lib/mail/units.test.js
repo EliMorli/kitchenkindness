@@ -38,6 +38,10 @@ test('only senders Gmail verified for their own domain count', async () => {
   assert.equal(authPass(await parse({ from: ceo, verified: 'mx.google.com; spf=pass smtp.mailfrom="x\\";dmarc=pass header.from=victim.example z"@attacker.example' })), false);
   // Nested comments are dropped whole.
   assert.equal(authPass(await parse({ from: ceo, verified: 'mx.google.com; spf=fail (a (b) dmarc=pass header.from=victim.example) smtp.mailfrom=x@attacker.example' })), false);
+  // A quote inside a comment could close it early: not trusted.
+  assert.equal(authPass(await parse({ from: ceo, verified: 'mx.google.com; spf=pass (google.com: domain of "x);dmarc=pass header.from=victim.example;("@attacker.example designates 1.2.3.4) smtp.mailfrom="x);dmarc=pass header.from=victim.example;("@attacker.example' })), false);
+  // A normal Gmail header passes.
+  assert.equal(authPass(await parse({ from: 'A <a@example.com>', verified: 'mx.google.com; dkim=pass header.i=@example.com header.s=sel header.b=AbC; spf=pass (google.com: domain of a@example.com designates 1.2.3.4 as permitted sender) smtp.mailfrom=a@example.com; dmarc=pass (p=NONE sp=NONE dis=NONE) header.from=example.com' })), true);
   // A legitimate quoted local part still passes.
   assert.equal(authPass(await parse({ from: ceo, verified: 'mx.google.com; spf=pass smtp.mailfrom="odd local"@victim.example' })), true);
   // Only the top header counts.

@@ -20,7 +20,7 @@ const DEFAULTS = {
   mail_settings: () => ({
     mode: 'off', auto_reply_enabled: true, auto_reply_scope: 'all', auto_reply_since: null, auto_reply_body: '',
     approval_body: '', no_reply_senders: '', inbox_uidvalidity: null, inbox_last_uid: null, inbox_fail_uid: null,
-    inbox_fail_count: 0, labels_ready: false,
+    inbox_fail_count: 0, inbox_fail_since: null, labels_ready: false,
     sync_lock_holder: null, sync_lock_until: null, last_sync_at: null, last_sync_ok_at: null, last_sync_error: ''
   })
 };

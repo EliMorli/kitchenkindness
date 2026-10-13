@@ -6,7 +6,7 @@
 -- (the app's server routes) can read or write them. Do not add an
 -- "Allow all operations" policy and do not add them to supabase_realtime.
 --
--- Applied to production on 2026-10-14 via Supabase MCP/SQL. Kept for reference.
+-- Applied to production on 2026-10-13 via Supabase MCP/SQL. Kept for reference.
 -- Function bodies are single-quoted on purpose (the SQL tool times out on
 -- dollar-quoted blocks).
 
@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS public.mail_settings (
   inbox_last_uid bigint,
   inbox_fail_uid bigint,
   inbox_fail_count integer NOT NULL DEFAULT 0,
+  inbox_fail_since timestamptz,
   labels_ready boolean NOT NULL DEFAULT false,
   sync_lock_holder text,
   sync_lock_until timestamptz,

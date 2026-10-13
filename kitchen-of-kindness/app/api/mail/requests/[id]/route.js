@@ -65,6 +65,8 @@ export async function POST(request, { params }) {
   };
 
   if (practice && DECISIONS.includes(body.action) && body.action !== 'approve') return json(practice);
+  // Summaries run in shadow mode anyway; a dry-run copy must not change the queue.
+  if (dryRun && body.action === 'summarize') return json(practice);
 
   switch (body.action) {
     case 'approve': {
