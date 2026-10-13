@@ -24,6 +24,9 @@ const BOX_COLOR = '#f59e0b';
 const PICKUP_COLOR = '#57534e';
 const STATUS_ICON = ['\u{1F373}', '\u{1F6CD}️', '\u{1F690}', '✅'];
 
+// What loadDate's reads return when they fail (a failed read is not "no data").
+const FAILED = Symbol('failed');
+
 const fmtTime = iso =>
   iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
 const uniq = list => [...new Set(list)];
@@ -131,10 +134,17 @@ export default function KitchenLivePage() {
   const modelSig = useRef('');
   const dateRef = useRef(null);
   const toastTimer = useRef(null);
-  // Saves in flight, and a counter bumped by every local change or live event
-  // to the row: a read sent before either one is stale and gets dropped.
-  const saving = useRef(0);
+  // Saves in flight per date, and a counter bumped by every local change or
+  // live event to the row: a read sent before either one is stale and gets
+  // dropped, and a read of a date with a save in flight waits for its read-back.
+  const saving = useRef({});
+  const busy = d => (saving.current[d] || 0) > 0;
   const rowVer = useRef(0);
+  // True while the page shows the default day (no ?date=, no arrows used), so
+  // a phone left open overnight moves on to the new day.
+  const autoDate = useRef(true);
+  // Special orders failed to load for this date: the backup poll retries them.
+  const weeksFailed = useRef(false);
 
   useEffect(() => {
     document.title = 'Kitchen Live · Kitchen of Kindness';
@@ -145,7 +155,9 @@ export default function KitchenLivePage() {
     }
     const q = new URLSearchParams(window.location.search).get('date');
     const parsed = q && /^\d{4}-\d{2}-\d{2}$/.test(q) ? parseDate(q) : null;
-    setDateStr(parsed && parsed.getDay() <= 4 ? q : defaultKitchenDate());
+    const fromLink = !!parsed && parsed.getDay() <= 4;
+    autoDate.current = !fromLink;
+    setDateStr(fromLink ? q : defaultKitchenDate());
     setIsTouch(!!window.matchMedia?.('(pointer: coarse)').matches);
     setCanShare(typeof navigator.share === 'function');
   }, []);
@@ -184,16 +196,18 @@ export default function KitchenLivePage() {
     const [weeks, kitchenRow] = await Promise.all([
       loadSpecialOrdersForDate(supabase, d).catch(e => {
         console.error('Error loading special orders:', e);
-        return [];
+        return FAILED;
       }),
       loadKitchenDay(supabase, d).catch(e => {
         console.error('Error loading kitchen progress:', e);
-        return null;
+        return FAILED;
       })
     ]);
     if (dateRef.current !== d) return;
-    setSpecialWeeks(weeks);
-    if (rowVer.current === v && saving.current === 0) setRow(kitchenRow);
+    // A failed read keeps what's already shown (a new date starts empty).
+    weeksFailed.current = weeks === FAILED;
+    if (weeks !== FAILED) setSpecialWeeks(weeks);
+    if (kitchenRow !== FAILED && rowVer.current === v && !busy(d)) setRow(kitchenRow);
     setLoadedDate(d);
   }, []);
 
@@ -203,10 +217,22 @@ export default function KitchenLivePage() {
     const v = rowVer.current;
     try {
       const r = await loadKitchenDay(supabase, d);
-      if (dateRef.current === d && rowVer.current === v && saving.current === 0) setRow(r);
+      if (dateRef.current === d && rowVer.current === v && !busy(d)) setRow(r);
     } catch (e) {
       console.error('Error refreshing kitchen progress:', e);
     }
+  }, []);
+
+  // The page was showing "today" and the day has changed: move to the new day
+  // (the date effect then loads it, and the live channel and poll follow).
+  const rollDay = useCallback(() => {
+    if (!autoDate.current) return false;
+    const d = defaultKitchenDate();
+    if (d === dateRef.current) return false;
+    setSheet(null);
+    setToast(null);
+    setDateStr(d);
+    return true;
   }, []);
 
   useEffect(() => {
@@ -216,8 +242,10 @@ export default function KitchenLivePage() {
   useEffect(() => {
     if (!authed || !dateStr) return;
     dateRef.current = dateStr;
+    weeksFailed.current = false;
     setLoadedDate(null);
     setRow(null);
+    setSpecialWeeks([]);
     loadDate(dateStr);
   }, [authed, dateStr, loadDate]);
 
@@ -232,7 +260,7 @@ export default function KitchenLivePage() {
           rowVer.current += 1;
           // Mid-save, the save's own read-back (sent once it finishes) brings
           // in this change too, so it's never lost.
-          if (saving.current > 0) return;
+          if (busy(dateStr)) return;
           if (payload.eventType === 'INSERT') {
             // An insert is the empty row a step creates just before it sets its
             // time; keep the steps already shown so the day doesn't jump back.
@@ -266,20 +294,24 @@ export default function KitchenLivePage() {
   useEffect(() => {
     if (!authed || !dateStr) return undefined;
     const id = setInterval(() => {
-      if (document.visibilityState === 'visible' && saving.current === 0) refreshRow();
+      if (document.visibilityState !== 'visible' || rollDay()) return;
+      const d = dateRef.current;
+      if (busy(d)) return;
+      if (weeksFailed.current) loadDate(d);
+      else refreshRow();
     }, live ? 60000 : 10000);
     return () => clearInterval(id);
-  }, [authed, dateStr, live, refreshRow]);
+  }, [authed, dateStr, live, refreshRow, loadDate, rollDay]);
 
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState !== 'visible' || !authed || !dateRef.current) return;
-      loadDate(dateRef.current);
+      if (!rollDay()) loadDate(dateRef.current);
       loadFamilies();
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
-  }, [authed, loadDate, loadFamilies]);
+  }, [authed, loadDate, loadFamilies, rollDay]);
 
   const day = useMemo(
     () => (families && dateStr ? buildDay(families, specialWeeks, dateStr) : null),
@@ -359,9 +391,19 @@ export default function KitchenLivePage() {
     }, 60);
   };
   const save = async (fn, ...args) => {
-    saving.current += 1;
-    const ok = await logStage(fn, supabase, dateStr, ...args);
-    saving.current -= 1;
+    const d = dateStr;
+    saving.current[d] = (saving.current[d] || 0) + 1;
+    let held = true;
+    const release = () => {
+      if (!held) return;
+      held = false;
+      saving.current[d] -= 1;
+    };
+    // A request stuck on a dead connection mustn't hold back updates forever.
+    const timer = setTimeout(release, 15000);
+    const ok = await logStage(fn, supabase, d, ...args);
+    clearTimeout(timer);
+    release();
     if (!ok) showToast('Could not save that step. Check the connection and try again.', 'warn');
     refreshRow();
     return ok;
@@ -438,9 +480,12 @@ export default function KitchenLivePage() {
     window.open(`/admin/print-labels?date=${dateStr}${silent ? '&silent=1' : ''}`, '_blank');
 
   const go = dir => {
+    const next = stepKitchenDate(dateStr, dir);
+    // Back on today's date, the page follows the calendar again.
+    autoDate.current = next === defaultKitchenDate();
     setSheet(null);
     setToast(null);
-    setDateStr(d => stepKitchenDate(d, dir));
+    setDateStr(next);
   };
 
   // ---------- render ----------
@@ -730,8 +775,14 @@ export default function KitchenLivePage() {
         <section className="kl-scene-card">
           <div className="kl-scene" ref={sceneBox} />
           <div className="kl-stage-chip">
-            {current.emoji} {current.label}
-            {currentTime && <span> {'·'} {currentTime}</span>}
+            {ready ? (
+              <>
+                {current.emoji} {current.label}
+                {currentTime && <span> {'·'} {currentTime}</span>}
+              </>
+            ) : (
+              'Loading…'
+            )}
           </div>
           {sceneState === 'ready' && (
             <div className="kl-zoom">
