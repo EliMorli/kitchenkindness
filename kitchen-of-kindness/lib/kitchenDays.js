@@ -30,8 +30,10 @@ export async function loadKitchenDay(supabase, dateStr) {
   return data || null;
 }
 
-// Every print records the latest time and label count.
-export async function markPrinted(supabase, dateStr, labelCount) {
+// Every print job records its time and label count, from the print tab as
+// the job starts (every Print labels button opens that tab). A count is always
+// written with the time, so an old count never sits next to a new print.
+export async function markPrinted(supabase, dateStr, labelCount = null) {
   const { error } = await supabase
     .from('kitchen_days')
     .upsert(

@@ -52,7 +52,8 @@ function PrintLabelsContent() {
   const [jobId, setJobId] = useState(0);
   const [warnings, setWarnings] = useState([]);
   const afterPrintSeen = useRef(false);
-  const loggedJob = useRef(0);
+  // The Kitchen Live update sent when the current job started (see runPrintJob).
+  const pendingLog = useRef(Promise.resolve());
   const labelRefs = useRef([]);
 
   // Same lightweight gate as /admin: the page lists family addresses.
@@ -200,6 +201,13 @@ function PrintLabelsContent() {
     afterPrintSeen.current = false;
     setJobId(j => j + 1);
     setPrintStatus('printing');
+    // Every print job moves the day to "Packing" on Kitchen Live. It's recorded
+    // as the job starts (not when it reports back), so a cancelled dialog or a
+    // browser that never fires afterprint still counts; the admin can undo it.
+    // Empty days and the test label never start a real job, so they don't.
+    if (!testMode && dateStr && labels.length > 0) {
+      pendingLog.current = logStage(markPrinted, supabase, dateStr, labels.length);
+    }
     const t0 = performance.now();
     window.print();
     const blockedMs = performance.now() - t0;
@@ -260,26 +268,22 @@ function PrintLabelsContent() {
     if (!silent) return;
     if (printStatus === 'done' || printStatus === 'no-labels') {
       if (printStatus === 'done') reportToOpener('done');
-      const t = setTimeout(() => {
+      let cancelled = false;
+      const t = setTimeout(async () => {
+        // Let the Kitchen Live update finish sending before the tab goes away.
+        await Promise.race([pendingLog.current, new Promise(r => setTimeout(r, 5000))]);
+        if (cancelled) return;
         window.close();
         // window.close() is a no-op if the tab wasn't script-opened.
         try { window.opener?.focus(); } catch {}
       }, printStatus === 'done' ? 2500 : 4000);
-      return () => clearTimeout(t);
+      return () => {
+        cancelled = true;
+        clearTimeout(t);
+      };
     }
     if (printStatus === 'timeout' || printStatus === 'dialog') reportToOpener(printStatus);
   }, [silent, printStatus, jobId]);
-
-  // Each finished print job moves the day to "Packing" on Kitchen Live. A
-  // dialog-closed job counts too: the operator almost always pressed Print,
-  // and the admin can undo the step if they cancelled.
-  useEffect(() => {
-    if (testMode || !dateStr || labels.length === 0) return;
-    if (printStatus !== 'done' && printStatus !== 'dialog') return;
-    if (loggedJob.current === jobId) return;
-    loggedJob.current = jobId;
-    logStage(markPrinted, supabase, dateStr, labels.length);
-  }, [printStatus, jobId, testMode, dateStr, labels.length]);
 
   const printAgain = () => runPrintJob();
 

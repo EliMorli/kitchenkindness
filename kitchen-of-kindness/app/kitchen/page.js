@@ -25,6 +25,7 @@ export default function KitchenPage() {
   const [selectedDay, setSelectedDay] = useState(getDefaultDay);
   const [copiedFlash, setCopiedFlash] = useState(false);
   const [copiedChecklistFlash, setCopiedChecklistFlash] = useState(false);
+  const [printFlash, setPrintFlash] = useState(false);
   const [specialWeeks, setSpecialWeeks] = useState([]);
 
   useEffect(() => {
@@ -103,6 +104,14 @@ export default function KitchenPage() {
     }
   };
 
+  // The print tab moves the day to "Packing" on Kitchen Live as the job starts.
+  // The date is worked out on click: this page is often left open for days.
+  const handlePrintLabels = () => {
+    window.open(`/admin/print-labels?date=${dateForSelectedDay()}&silent=1`, '_blank');
+    setPrintFlash(true);
+    setTimeout(() => setPrintFlash(false), 2500);
+  };
+
   const specialOrders = day.specialOrders;
   const specialPeople = day.totals.specialPeople;
 
@@ -146,11 +155,11 @@ export default function KitchenPage() {
           </button>
           <button
             className="kitchen-copy-btn"
-            onClick={() => window.open(`/admin/print-labels?date=${dateForSelectedDay()}&silent=1`, '_blank')}
+            onClick={handlePrintLabels}
             disabled={filteredFamilies.length === 0 && specialOrders.length === 0}
-            title="Print this day's labels (regular + special orders). Silent from the kitchen shortcut; needs the admin login once in this browser."
+            title="Print this day's labels (regular + special orders). Silent from the kitchen shortcut; needs the admin login once in this browser. Printing moves the day to Packing on Kitchen Live."
           >
-            🖨️ Print labels
+            {printFlash ? '✓ Sent to printer' : '🖨️ Print labels'}
           </button>
           <span className="kitchen-summary-item">{filteredFamilies.length} Families</span>
           {isThursday ? (
