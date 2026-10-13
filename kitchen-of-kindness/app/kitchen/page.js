@@ -8,7 +8,7 @@ import { attachPauses } from '../../lib/pauses';
 import { loadSpecialOrdersForDate, orderTitle } from '../../lib/weeks';
 import { buildDay } from '../../lib/day';
 import { buildWhatsAppList, buildChecklist } from '../../lib/whatsapp';
-import { markCopied, markPrinted, logStage } from '../../lib/kitchenDays';
+import { markCopied, logStage } from '../../lib/kitchenDays';
 
 const DELIVERY_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'];
 const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -104,13 +104,12 @@ export default function KitchenPage() {
     }
   };
 
-  // Printing the labels moves the day to "Packing" on Kitchen Live right away;
-  // the print tab confirms with the exact label count when the job finishes.
+  // The print tab moves the day to "Packing" on Kitchen Live as the job starts.
+  // The date is worked out on click: this page is often left open for days.
   const handlePrintLabels = () => {
-    window.open(`/admin/print-labels?date=${day.dateStr}&silent=1`, '_blank');
+    window.open(`/admin/print-labels?date=${dateForSelectedDay()}&silent=1`, '_blank');
     setPrintFlash(true);
     setTimeout(() => setPrintFlash(false), 2500);
-    logStage(markPrinted, supabase, day.dateStr, day.totals.bags);
   };
 
   const specialOrders = day.specialOrders;
@@ -158,7 +157,7 @@ export default function KitchenPage() {
             className="kitchen-copy-btn"
             onClick={handlePrintLabels}
             disabled={filteredFamilies.length === 0 && specialOrders.length === 0}
-            title="Print this day's labels (regular + special orders). Silent from the kitchen shortcut; needs the admin login once in this browser. Also marks the day as packing on Kitchen Live."
+            title="Print this day's labels (regular + special orders). Silent from the kitchen shortcut; needs the admin login once in this browser. Printing moves the day to Packing on Kitchen Live."
           >
             {printFlash ? '✓ Sent to printer' : '🖨️ Print labels'}
           </button>

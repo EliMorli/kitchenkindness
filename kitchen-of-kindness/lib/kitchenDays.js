@@ -30,13 +30,16 @@ export async function loadKitchenDay(supabase, dateStr) {
   return data || null;
 }
 
-// Every print records the latest time. The Print labels buttons call this
-// on click (so Kitchen Live moves even if the print tab never reports back);
-// the print tab calls it again when the job finishes, with the label count.
+// Every print job records its time and label count, from the print tab as
+// the job starts (every Print labels button opens that tab). A count is always
+// written with the time, so an old count never sits next to a new print.
 export async function markPrinted(supabase, dateStr, labelCount = null) {
-  const row = { delivery_date: dateStr, printed_at: new Date().toISOString() };
-  if (labelCount != null) row.printed_labels = labelCount;
-  const { error } = await supabase.from('kitchen_days').upsert(row, { onConflict: 'delivery_date' });
+  const { error } = await supabase
+    .from('kitchen_days')
+    .upsert(
+      { delivery_date: dateStr, printed_at: new Date().toISOString(), printed_labels: labelCount },
+      { onConflict: 'delivery_date' }
+    );
   if (error) throw error;
 }
 

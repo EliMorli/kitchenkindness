@@ -13,7 +13,7 @@ import { loadSpecialOrdersForDate, longDate, parseDate, todayStr, orderTitle } f
 import { buildDay, defaultKitchenDate, stepKitchenDate } from '../../../lib/day';
 import { buildWhatsAppList, buildGroupText } from '../../../lib/whatsapp';
 import {
-  STAGES, stageIndex, loadKitchenDay, markPrinted, markCopied, markDelivered, markStage, undoStage, logStage
+  STAGES, stageIndex, loadKitchenDay, markCopied, markDelivered, markStage, undoStage, logStage
 } from '../../../lib/kitchenDays';
 import { groupColor } from '../../../lib/groups';
 import { addressArea } from '../../../lib/format';
@@ -131,7 +131,10 @@ export default function KitchenLivePage() {
   const modelSig = useRef('');
   const dateRef = useRef(null);
   const toastTimer = useRef(null);
+  // Saves in flight, and a counter bumped by every local change or live event
+  // to the row: a read sent before either one is stale and gets dropped.
   const saving = useRef(0);
+  const rowVer = useRef(0);
 
   useEffect(() => {
     document.title = 'Kitchen Live · Kitchen of Kindness';
@@ -177,6 +180,7 @@ export default function KitchenLivePage() {
 
   const loadDate = useCallback(async d => {
     if (!supabase || !d) return;
+    const v = rowVer.current;
     const [weeks, kitchenRow] = await Promise.all([
       loadSpecialOrdersForDate(supabase, d).catch(e => {
         console.error('Error loading special orders:', e);
@@ -189,16 +193,17 @@ export default function KitchenLivePage() {
     ]);
     if (dateRef.current !== d) return;
     setSpecialWeeks(weeks);
-    setRow(kitchenRow);
+    if (rowVer.current === v && saving.current === 0) setRow(kitchenRow);
     setLoadedDate(d);
   }, []);
 
   const refreshRow = useCallback(async () => {
     const d = dateRef.current;
     if (!supabase || !d) return;
+    const v = rowVer.current;
     try {
       const r = await loadKitchenDay(supabase, d);
-      if (dateRef.current === d) setRow(r);
+      if (dateRef.current === d && rowVer.current === v && saving.current === 0) setRow(r);
     } catch (e) {
       console.error('Error refreshing kitchen progress:', e);
     }
@@ -224,6 +229,10 @@ export default function KitchenLivePage() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'kitchen_days' }, payload => {
         const r = payload.new;
         if (r && r.delivery_date === dateStr) {
+          rowVer.current += 1;
+          // Mid-save, the save's own read-back (sent once it finishes) brings
+          // in this change too, so it's never lost.
+          if (saving.current > 0) return;
           if (payload.eventType === 'INSERT') {
             // An insert is the empty row a step creates just before it sets its
             // time; keep the steps already shown so the day doesn't jump back.
@@ -329,7 +338,10 @@ export default function KitchenLivePage() {
     s.select(sheet && sheet.type !== 'step' ? sheet : null);
   }, [sheet, sceneState]);
 
-  const patchRow = patch => setRow(r => ({ ...(r || { delivery_date: dateStr }), ...patch }));
+  const patchRow = patch => {
+    rowVer.current += 1;
+    setRow(r => ({ ...(r || { delivery_date: dateStr }), ...patch }));
+  };
 
   // The dock buttons move the day along; bring the 3D view into sight so the
   // animation is seen, and give a little buzz on phones that support it.
@@ -420,14 +432,10 @@ export default function KitchenLivePage() {
     await save(markDelivered);
   };
 
-  // Printing moves the day to Packing right away, same as the kitchen page's
-  // Print labels button; the print tab confirms with the label count.
-  const openPrint = silent => {
+  // The print tab moves the day to Packing itself as the job starts, the
+  // same as when the kitchen prints; this page follows along live.
+  const openPrint = silent =>
     window.open(`/admin/print-labels?date=${dateStr}${silent ? '&silent=1' : ''}`, '_blank');
-    if (!silent) return;
-    patchRow({ printed_at: new Date().toISOString() });
-    save(markPrinted, day?.totals.bags);
-  };
 
   const go = dir => {
     setSheet(null);
@@ -588,10 +596,14 @@ export default function KitchenLivePage() {
               ? `Printed at ${fmtTime(row.printed_at)} · ${row.printed_labels ?? t.bags} labels`
               : 'Not printed yet'}
           </div>
-          <p className="kl-note">Pressing Print labels on the kitchen page, in the admin panel or here moves the day to Packing.</p>
+          <p className="kl-note">Labels printing from the kitchen page, the admin panel or here move the day to Packing by themselves.</p>
           <div className="kl-row">
-            <button type="button" className="kl-btn small" onClick={() => openPrint(true)}>{'\u{1F5A8}️'} Print labels</button>
-            <button type="button" className="kl-btn small ghost" onClick={() => openPrint(false)}>Preview</button>
+            <button type="button" className="kl-btn small" onClick={() => openPrint(true)} disabled={!t.bags}>
+              {'\u{1F5A8}️'} Print labels
+            </button>
+            <button type="button" className="kl-btn small ghost" onClick={() => openPrint(false)} disabled={!t.bags}>
+              Preview
+            </button>
           </div>
         </>
       );
@@ -624,7 +636,7 @@ export default function KitchenLivePage() {
       const status = stepStatus(i);
       const when = s.field ? fmtTime(row?.[s.field]) : '';
       const auto = {
-        packing: 'This happens by itself when someone presses Print labels on the kitchen page (or here).',
+        packing: 'This happens by itself when labels start printing: from the kitchen page, the admin panel or here.',
         delivering: 'This happens by itself when you copy the list for WhatsApp.',
         delivered: 'Mark this when the volunteers have dropped off every bag.'
       }[s.key];
@@ -831,7 +843,7 @@ export default function KitchenLivePage() {
       )}
 
       <div className="kl-dock">
-        <button type="button" className="kl-btn primary" onClick={handleCopyList} disabled={!t || !t.bags}>
+        <button type="button" className="kl-btn primary" onClick={handleCopyList} disabled={!ready || !t.bags}>
           <span className="kl-btn-main">{'\u{1F4CB}'} {stage >= 2 ? 'Copy list again' : 'Copy list'}</span>
           <span className="kl-btn-sub">
             {stage >= 2 && row?.copied_at ? `sent at ${fmtTime(row.copied_at)}` : 'for the WhatsApp group'}
@@ -841,7 +853,7 @@ export default function KitchenLivePage() {
           type="button"
           className={`kl-btn secondary ${stage === 3 ? 'done' : ''}`}
           onClick={() => secondary.run?.()}
-          disabled={!secondary.run || !t || (!t.bags && stage < 3)}
+          disabled={!ready || !secondary.run || (!t.bags && stage < 3)}
         >
           <span className="kl-btn-main">{secondary.icon} {secondary.main}</span>
           <span className="kl-btn-sub">{secondary.sub}</span>

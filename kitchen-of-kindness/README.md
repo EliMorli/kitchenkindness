@@ -143,9 +143,11 @@ steps, stored per date in the `kitchen_days` table
 (`supabase-migrations/2026-10-13-add-kitchen-days.sql`):
 
 1. **Cooking**: the default; bags show as ghosts.
-2. **Packing**: recorded the moment someone presses **Print labels** (kitchen
-   page, admin panel or Kitchen Live), then confirmed with the label count when
-   the print tab finishes (`printed_at`, `printed_labels`).
+2. **Packing**: recorded by the print tab as each print job starts, whichever
+   **Print labels** button opened it (kitchen page, admin panel or Kitchen
+   Live), with the label count (`printed_at`, `printed_labels`). It counts even
+   if the print dialog is cancelled or the browser never reports back; days
+   with nothing to print are never marked.
 3. **Delivering**: recorded by itself the first time the list is copied for the
    volunteers' WhatsApp group, from Kitchen Live or the kitchen view (`copied_at`).
    Volunteers claim groups in WhatsApp, so this stands in for sign-ups.
