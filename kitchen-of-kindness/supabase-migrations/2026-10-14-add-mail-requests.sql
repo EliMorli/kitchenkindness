@@ -26,6 +26,9 @@ CREATE TABLE IF NOT EXISTS public.mail_requests (
   last_message_at timestamptz NOT NULL DEFAULT now(),
   message_count integer NOT NULL DEFAULT 1,
   needs_attention boolean NOT NULL DEFAULT false,
+  attention_note text NOT NULL DEFAULT '',
+  -- A new request that answers an email of an earlier one (shown on the card).
+  related_request_id bigint REFERENCES public.mail_requests(id) ON DELETE SET NULL,
   ai_status text NOT NULL DEFAULT 'due' CHECK (ai_status IN ('due', 'done', 'failed')),
   ai_attempts integer NOT NULL DEFAULT 0,
   ai_summary text NOT NULL DEFAULT '',
@@ -166,8 +169,9 @@ BEGIN
       (p_family->>''longitude'')::float8);
   UPDATE public.mail_requests
      SET status = ''approved'', kind = ''request'', kind_set_by = ''admin'', family_id = v_id, approved_family = p_family,
-         decided_at = now(), needs_attention = false, gmail_dirty = true,
-         approval_email_status = CASE WHEN p_send_email AND r.reply_address <> '''' THEN ''due'' ELSE ''not_needed'' END
+         decided_at = now(), needs_attention = false, attention_note = '''', gmail_dirty = true,
+         approval_email_status = CASE WHEN p_send_email AND r.reply_address <> '''' THEN ''due'' ELSE ''not_needed'' END,
+         auto_reply_status = CASE WHEN auto_reply_status = ''wait_ai'' THEN ''not_needed'' ELSE auto_reply_status END
    WHERE id = p_request_id;
   RETURN v_id;
 END';
@@ -180,7 +184,8 @@ RETURNS json LANGUAGE sql STABLE SET search_path = '' AS '
     ''approved'', count(*) FILTER (WHERE status = ''approved''),
     ''declined'', count(*) FILTER (WHERE status = ''declined''),
     ''other'', count(*) FILTER (WHERE status = ''other''),
-    ''attention'', count(*) FILTER (WHERE needs_attention))
+    ''attention'', count(*) FILTER (WHERE needs_attention),
+    ''badge'', count(*) FILTER (WHERE status IN (''new'', ''pending'') OR needs_attention))
   FROM public.mail_requests';
 
 REVOKE ALL ON FUNCTION public.mail_try_lock(text, integer) FROM PUBLIC, anon, authenticated;

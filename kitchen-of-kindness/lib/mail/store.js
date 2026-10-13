@@ -28,6 +28,15 @@ export function createStore(db) {
     },
     insertMessage: row => db.insert('mail_messages', row, { onConflictIgnore: 'gmail_msgid' }).then(one),
     messagesFor: requestId => db.select('mail_messages', { eq: { request_id: requestId }, order: ['received_at', true] }),
+    // How many emails are stored for a request, and the Gmail conversations
+    // they are in (a reply can land in a new one).
+    async messageCount(requestId) {
+      return (await db.select('mail_messages', { eq: { request_id: requestId }, columns: 'id', limit: 1000 })).length;
+    },
+    async threadsFor(requestId) {
+      const rows = await db.select('mail_messages', { eq: { request_id: requestId }, columns: 'gmail_thrid', limit: 1000 });
+      return [...new Set(rows.map(m => m.gmail_thrid).filter(Boolean))];
+    },
     // In small batches: one Supabase response is capped at 1000 rows.
     async messagesForMany(ids) {
       const out = [];
@@ -87,7 +96,7 @@ export function createStore(db) {
     },
     async counts() {
       const c = await db.rpc('mail_counts', {});
-      return { pending: 0, approved: 0, declined: 0, other: 0, attention: 0, ...(c || {}) };
+      return { pending: 0, approved: 0, declined: 0, other: 0, attention: 0, badge: 0, ...(c || {}) };
     },
     approve: (id, family, sendEmail) =>
       db.rpc('mail_approve_request', { p_request_id: id, p_family: family, p_send_email: !!sendEmail })

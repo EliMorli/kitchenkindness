@@ -243,14 +243,16 @@ test('an email with NUL characters is cleaned and saved (it used to block the in
   assert.ok(!w.db.tables.mail_messages.some(m => /\u0000/.test(m.body_text)));
 });
 
-test('an email that can never be saved is skipped after 3 tries, not blocking later mail', async () => {
+test('an email the database keeps rejecting is skipped after 3 tries and shown under Needs attention', async () => {
   const w = createFakeWorld({ emails: [] });
   w.gmail.deliver({ thread: 'bad', from: 'Bad <bad@example.com>', subject: 'Bad', body: 'food please' });
   w.gmail.deliver({ thread: 'good', from: 'Good <good@example.com>', subject: 'Good', body: 'food please' });
   const badId = w.gmail.inbox[0].emailId;
   const insert = w.db.insert;
   w.db.insert = async (table, row, opts) => {
-    if (table === 'mail_messages' && row.gmail_msgid === badId && row.automated_reason !== 'unreadable') throw new Error('boom');
+    if (table === 'mail_messages' && row.gmail_msgid === badId && row.automated_reason !== 'unreadable') {
+      throw Object.assign(new Error('invalid byte sequence'), { code: '22021' });
+    }
     return insert(table, row, opts);
   };
   await run(w);
@@ -260,8 +262,83 @@ test('an email that can never be saved is skipped after 3 tries, not blocking la
   assert.equal(r.skippedUnreadable, 1);
   assert.ok(byThread(w, 'good'));
   assert.ok(w.db.tables.mail_messages.some(m => m.gmail_msgid === badId && m.automated_reason === 'unreadable'));
-  // The bad email's request was created before the failure; it was never counted twice.
-  assert.equal(byThread(w, 'bad').message_count, 1);
+  const bad = byThread(w, 'bad');
+  assert.equal(bad.needs_attention, true);
+  assert.match(bad.attention_note, /couldn’t be read/);
+  assert.equal(bad.message_count, 1);
+  // Its auto-reply never went out unthreaded while the email wasn't saved.
+  assert.ok(!w.smtp.outbox.some(m => m.to === 'bad@example.com' && !m.inReplyTo));
+  assert.equal((await w.store.counts()).badge, 2);
+});
+
+test('a database or network problem never skips an email: it is read once things recover', async () => {
+  const w = createFakeWorld({ emails: [] });
+  w.gmail.deliver({ thread: 'rosa', from: 'Rosa <rosa@example.com>', subject: 'Meals', body: 'food please' });
+  const insert = w.db.insert;
+  let down = true;
+  w.db.insert = async (table, row, opts) => {
+    if (down && table === 'mail_requests') throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+    return insert(table, row, opts);
+  };
+  for (let i = 0; i < 5; i++) {
+    const r = await run(w);
+    assert.equal(r.skippedUnreadable, 0);
+    assert.match(r.errors.join(' '), /retried/);
+  }
+  down = false;
+  await run(w);
+  const rosa = byThread(w, 'rosa');
+  assert.ok(rosa);
+  assert.equal(rosa.needs_attention, false);
+  assert.equal(w.db.tables.mail_messages.filter(m => m.request_id === rosa.id).length, 1);
+});
+
+test('a half-saved follow-up is finished on the next run, counted once', async () => {
+  const w = createFakeWorld({ emails: [] });
+  w.gmail.deliver({ thread: 'p', from: 'Pat <pat@example.com>', subject: 'Meals', body: 'food please' });
+  await run(w);
+  const pat = byThread(w, 'p');
+  await w.store.approve(pat.id, { address: '1 Main St', people_count: 2, delivery_days: ['Monday'] }, false);
+  await run(w);
+  w.gmail.deliver({ thread: 'p', from: 'Pat <pat@example.com>', subject: 'Re: Meals', body: 'We moved to 9 Elm St', replyTo: 0 });
+  const insert = w.db.insert;
+  let failOnce = true;
+  w.db.insert = async (table, row, opts) => {
+    if (failOnce && table === 'mail_messages') {
+      failOnce = false;
+      throw new Error('fetch failed');
+    }
+    return insert(table, row, opts);
+  };
+  await run(w);
+  await run(w);
+  const after = byThread(w, 'p');
+  assert.equal(after.message_count, 2);
+  assert.equal(after.needs_attention, true);
+  assert.match(after.attention_note, /approved/);
+  assert.equal(w.db.tables.mail_messages.filter(m => m.request_id === pat.id).length, 2);
+});
+
+test('a new request whose email failed to save once: reply waits, then goes out threaded', async () => {
+  const w = createFakeWorld({ emails: [] });
+  w.gmail.deliver({ thread: 'n', from: 'Nia <nia@example.com>', subject: 'Meals', body: 'food please' });
+  const insert = w.db.insert;
+  let failOnce = true;
+  w.db.insert = async (table, row, opts) => {
+    if (failOnce && table === 'mail_messages') {
+      failOnce = false;
+      throw new Error('fetch failed');
+    }
+    return insert(table, row, opts);
+  };
+  await run(w);
+  assert.equal(w.smtp.outbox.length, 0);
+  const r = await run(w);
+  assert.equal(r.newRequests, 1);
+  const nia = byThread(w, 'n');
+  assert.equal(nia.message_count, 1);
+  assert.equal(w.smtp.outbox.length, 1);
+  assert.ok(w.smtp.outbox[0].inReplyTo);
 });
 
 test('replies only go to the verified sender, never to a stranger in Reply-To', async () => {
@@ -272,11 +349,19 @@ test('replies only go to the verified sender, never to a stranger in Reply-To', 
     thread: 's3', from: 'Eve <eve@victim.example>', subject: 'Fake pass', body: 'food please',
     verified: 'mx.google.com; spf=fail (google.com: domain of spf=pass@victim.example does not designate) smtp.mailfrom=spf=pass@victim.example'
   });
+  // A real Gmail sender naming another Gmail user as Reply-To.
+  w.gmail.deliver({
+    thread: 's4', from: 'Bob <attacker.bob@gmail.com>', replyTo: 'victim.person@gmail.com', subject: 'URGENT: call 1-800-555-0100', body: 'x',
+    verified: 'mx.google.com; dkim=pass header.i=@gmail.com header.s=20230601; spf=pass smtp.mailfrom=attacker.bob@gmail.com; dmarc=pass (p=NONE) header.from=gmail.com'
+  });
   await run(w);
   assert.equal(byThread(w, 's1').reply_address, 'bob@attacker.example');
+  // An organisation's own Reply-To is kept for the approval email only.
   assert.equal(byThread(w, 's2').reply_address, 'intake@clinic.example');
   assert.equal(byThread(w, 's3').auto_reply_status, 'not_needed');
-  assert.deepEqual(w.smtp.outbox.map(m => m.to).sort(), ['bob@attacker.example', 'intake@clinic.example']);
+  assert.equal(byThread(w, 's4').reply_address, 'attacker.bob@gmail.com');
+  // Automatic replies only ever go to the verified From address.
+  assert.deepEqual(w.smtp.outbox.map(m => m.to).sort(), ['attacker.bob@gmail.com', 'bob@attacker.example', 'sue@clinic.example']);
 });
 
 test('one auto-reply per sender per week, however they write their address', async () => {
@@ -374,4 +459,172 @@ test('counts stay right past 1000 requests', async () => {
   for (let i = 0; i < 1100; i++) await w.db.insert('mail_requests', { gmail_thrid: `x${i}`, status: i % 2 ? 'declined' : 'pending' });
   const c = await w.store.counts();
   assert.equal(c.pending + c.declined, 1100);
+});
+
+test('Gmail threads: replies in another conversation are labelled with the request', async () => {
+  const w = createFakeWorld({ emails: [] });
+  w.gmail.deliver({ thread: 'r1', from: 'Ana <ana@example.com>', subject: 'Meals', body: 'food please' });
+  await run(w);
+  const ack = w.smtp.outbox[0];
+  // Same subject, but Gmail filed it as a new conversation.
+  w.gmail.deliver({ thread: 'r2', from: 'Ana <ana@example.com>', subject: 'Re: Meals', body: 'I forgot: 5 Oak St', inReplyTo: ack.messageId });
+  await run(w);
+  const req = byThread(w, 'r1');
+  assert.equal(req.message_count, 2);
+  await w.store.updateRequest(req.id, { status: 'declined', kind_set_by: 'admin', gmail_dirty: true });
+  await run(w);
+  for (const t of ['r1', 'r2']) {
+    const labels = [...w.gmail.labels.get(w.gmail.threadId(t))];
+    assert.ok(labels.includes('Kitchen Requests/Declined'), t);
+    assert.ok(!labels.includes('\\Inbox'), t);
+    assert.ok(w.gmail.seenThreads.has(w.gmail.threadId(t)), t);
+  }
+});
+
+test('a changed-subject answer to an approval email is a new request, linked to the old one', async () => {
+  const w = createFakeWorld({ emails: [] });
+  w.gmail.deliver({ thread: 'd1', from: 'Dana <dana@clinic.example>', subject: 'Referral: Mr. Pike', body: 'meals for my client' });
+  await run(w);
+  const pike = byThread(w, 'd1');
+  await w.store.approve(pike.id, { address: '1 Main St', people_count: 1, delivery_days: ['Monday'] }, true);
+  await run(w);
+  const approval = w.smtp.outbox.at(-1);
+  w.gmail.deliver({ thread: 'd2', from: 'Dana <dana@clinic.example>', subject: 'New referral: Mrs. Lee', body: 'another client', inReplyTo: approval.messageId });
+  const r = await run(w);
+  assert.equal(r.newRequests, 1);
+  const lee = byThread(w, 'd2');
+  assert.equal(lee.related_request_id, pike.id);
+  assert.equal(byThread(w, 'd1').needs_attention, false);
+});
+
+test('never-auto-reply list: exact addresses still match with dots and +tags', async () => {
+  const w = createFakeWorld({ emails: [] });
+  await w.store.updateSettings({ no_reply_senders: 'rosa.delgado@gmail.com, ana+kitchen@clinic.example' });
+  w.gmail.deliver({ thread: 'a', from: 'Rosa <rosa.delgado@gmail.com>', subject: 'A', body: 'food please' });
+  w.gmail.deliver({ thread: 'b', from: 'Ana <ana+kitchen@clinic.example>', subject: 'B', body: 'food please' });
+  w.gmail.deliver({ thread: 'c', from: 'Rosa <RosaDelgado+x@googlemail.com>', subject: 'C', body: 'food please' });
+  await run(w);
+  for (const t of ['a', 'b', 'c']) assert.equal(byThread(w, t).auto_reply_status, 'not_needed', t);
+  assert.equal(w.smtp.outbox.length, 0);
+});
+
+test('"requests only": the admin sorting a request while Claude works still settles the reply', async () => {
+  for (const kind of ['request', 'other']) {
+    const w = createFakeWorld({ emails: [] });
+    await w.store.updateSettings({ auto_reply_scope: 'requests' });
+    w.gmail.deliver({ thread: 'x', from: 'Sam <sam@example.com>', subject: 'Hello', body: 'hi there' });
+    const realAi = w.ai;
+    w.ai = async (msgs, opts) => {
+      const req = byThread(w, 'x');
+      await w.store.updateRequest(req.id, { kind, kind_set_by: 'admin', status: kind === 'request' ? 'pending' : 'other' });
+      return realAi(msgs, opts);
+    };
+    await run(w);
+    const x = byThread(w, 'x');
+    assert.equal(x.kind, kind);
+    assert.equal(x.auto_reply_status, kind === 'request' ? 'sent' : 'not_needed', kind);
+  }
+});
+
+test("Claude's last failed try never undoes the admin's 'not a request'", async () => {
+  const w = createFakeWorld({ emails: [] });
+  await w.store.updateSettings({ auto_reply_scope: 'requests' });
+  w.gmail.deliver({ thread: 'f', from: 'Fay <fay@example.com>', subject: 'F', body: 'hello' });
+  w.ai.fail = new Error('overloaded');
+  await run(w);
+  await run(w);
+  const failing = w.ai;
+  w.ai = async (msgs, opts) => {
+    const req = byThread(w, 'f');
+    await w.store.updateRequest(req.id, { kind: 'other', kind_set_by: 'admin', status: 'other' });
+    return failing(msgs, opts);
+  };
+  await run(w);
+  const f = byThread(w, 'f');
+  assert.equal(f.status, 'other');
+  assert.equal(f.ai_status, 'failed');
+  assert.equal(f.auto_reply_status, 'not_needed');
+  assert.equal(w.smtp.outbox.length, 0);
+});
+
+test('runs that died mid-summary stop retrying after the limit, without calling Claude', async () => {
+  const w = createFakeWorld({ emails: [] });
+  w.gmail.deliver({ thread: 'k', from: 'Kai <kai@example.com>', subject: 'K', body: 'food please' });
+  await w.store.updateSettings({ mode: 'shadow' });
+  w.ai.fail = new Error('down');
+  await run(w);
+  w.ai.fail = null;
+  const k = byThread(w, 'k');
+  await w.store.updateRequest(k.id, { ai_attempts: 3, ai_status: 'due' });
+  const calls = w.ai.calls;
+  await run(w);
+  assert.equal(w.ai.calls, calls);
+  assert.equal(byThread(w, 'k').ai_status, 'failed');
+  assert.equal(byThread(w, 'k').status, 'pending');
+});
+
+test('a queued auto-reply is not sent days late, or after switching back to Live', async () => {
+  let t = Date.parse('2026-10-01T10:00:00Z');
+  const now = () => new Date(t);
+  const w = createFakeWorld({ emails: [], now });
+  await w.store.updateSettings({ auto_reply_scope: 'requests' });
+  w.gmail.deliver({ thread: 'a', from: 'Ana <ana@example.com>', subject: 'Meals', body: 'food please' });
+  const ai = w.ai;
+  w.ai = null; // no Claude key yet: the reply waits for the summary
+  await run(w, { now });
+  assert.equal(byThread(w, 'a').auto_reply_status, 'wait_ai');
+  t += 6 * 86_400_000;
+  w.ai = ai;
+  await run(w, { now });
+  assert.equal(byThread(w, 'a').auto_reply_status, 'not_needed');
+  assert.equal(w.smtp.outbox.length, 0);
+
+  const w2 = createFakeWorld({ emails: [] });
+  w2.gmail.deliver({ thread: 'b', from: 'Ben <ben@example.com>', subject: 'Meals', body: 'food please' });
+  w2.smtp.fail = Object.assign(new Error('auth'), { code: 'EAUTH' });
+  await run(w2);
+  assert.equal(byThread(w2, 'b').auto_reply_status, 'due');
+  w2.smtp.fail = null;
+  // Shadow, then Live again: only emails from now on get the reply.
+  await w2.store.updateSettings({ mode: 'live', auto_reply_since: new Date(Date.now() + 1000).toISOString() });
+  await run(w2);
+  assert.equal(byThread(w2, 'b').auto_reply_status, 'not_needed');
+  assert.equal(w2.smtp.outbox.length, 0);
+});
+
+test('if Sent Mail can never be checked, an unclear send becomes "unclear" after a day (admin can resend)', async () => {
+  let t = Date.now();
+  const now = () => new Date(t);
+  const w = createFakeWorld({ emails: [], now });
+  w.gmail.deliver({ thread: 'u', from: 'Uma <uma@example.com>', subject: 'U', body: 'food please' });
+  w.smtp.fail = Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' });
+  await run(w, { now });
+  w.smtp.fail = null;
+  w.gmail.sentHasMessageId = async () => {
+    throw Object.assign(new Error('All Mail is hidden from IMAP'), { code: 'AllMailHidden' });
+  };
+  t += 60 * 60_000;
+  const r = await run(w, { now });
+  assert.equal(byThread(w, 'u').auto_reply_status, 'claimed');
+  assert.match(r.errors.join(' '), /Show in IMAP/);
+  t += 25 * 60 * 60_000;
+  await run(w, { now });
+  assert.equal(byThread(w, 'u').auto_reply_status, 'unknown');
+  assert.equal(w.smtp.outbox.length, 0);
+});
+
+test('Mail badge counts a long pending conversation once', async () => {
+  const w = createFakeWorld({ emails: [] });
+  w.gmail.deliver({ thread: 'L', from: 'L <l@example.com>', subject: 'L', body: 'food please' });
+  await run(w);
+  for (let i = 0; i < 8; i++) w.gmail.deliver({ thread: 'L', from: 'L <l@example.com>', subject: 'Re: L', body: `more ${i}`, replyTo: 0 });
+  await run(w);
+  const L = byThread(w, 'L');
+  assert.equal(L.message_count, 9);
+  assert.equal(L.needs_attention, true);
+  assert.match(L.attention_note, /Long conversation/);
+  const c = await w.store.counts();
+  assert.equal(c.pending, 1);
+  assert.equal(c.attention, 1);
+  assert.equal(c.badge, 1);
 });

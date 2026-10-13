@@ -44,6 +44,33 @@ const SEND = {
 const later = (a, b) => (new Date(a) > new Date(b) ? a : b);
 const shortAddress = fam => (fam ? `${fam.address || ''}${fam.unit ? ` #${fam.unit}` : ''}`.trim() : '');
 const refList = v => (Array.isArray(v) ? v : String(v || '').split(/\s+/)).map(s => s.trim()).filter(Boolean);
+const ageMs = (iso, nowMs) => (iso ? nowMs - new Date(iso).getTime() : 0);
+
+// "Re: Fwd: Meals please" -> "meals please"
+export const normSubject = s =>
+  String(s || '')
+    .replace(/^\s*((re|fwd?|aw|wg|sv|rv|enc|tr)\s*(\[\d+\])?\s*:\s*)+/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+
+// A reply that Gmail filed as a new conversation joins the request it answers
+// only while that request is still open and the subject wasn't changed. A
+// changed subject (or an answer to a decided request) is often something new,
+// e.g. a second household: it becomes its own request that points back.
+export function joinsRequest(req, subject) {
+  if (!UNDECIDED.includes(req.status)) return false;
+  if (req.status === 'other' && req.kind_set_by === 'admin') return false;
+  const s = normSubject(subject);
+  const original = normSubject(req.subject);
+  return !s || !original || s === original;
+}
+
+// Errors caused by the email itself (it can't be read, or the database
+// rejects its text) count towards skipping it. Anything else (network,
+// timeouts, a database outage) only stops the run; it is retried next time.
+const dataError = err => err?.poison === true || /^2[23]/.test(String(err?.code || ''));
+const asPoison = err => Object.assign(err instanceof Error ? err : new Error(String(err)), { poison: true });
 
 export async function runSync({
   store, gmail, smtp, ai, selfEmail = '', dryRun = false, now = () => new Date(),
@@ -75,7 +102,8 @@ export async function runSync({
   const cooldownSince = () => new Date(now().getTime() - LIMITS.replyCooldownDays * DAY_MS).toISOString();
 
   // ---------- A. read ----------
-  const autoReplyDecision = async ({ parsed, key, received, authOk, dueThisRun }) => {
+  // The automatic reply only ever goes to the From address Gmail verified.
+  const autoReplyDecision = async ({ parsed, email, key, received, authOk, dueThisRun }) => {
     if (!live) return { status: 'skipped', note: 'Shadow mode' };
     if (!settings.auto_reply_enabled) return { status: 'not_needed', note: 'Auto-reply is off' };
     if (settings.auto_reply_since && new Date(received) < new Date(settings.auto_reply_since)) {
@@ -84,7 +112,7 @@ export async function runSync({
     if (!key) return { status: 'not_needed', note: 'No reply address' };
     if (!authOk) return { status: 'not_needed', note: 'Sender not verified by Gmail (no auto-reply)' };
     if (suppressesAutoReply(parsed)) return { status: 'not_needed', note: 'Sender asked for no automatic replies' };
-    if (onNoReplyList(key, noReplyList)) return { status: 'not_needed', note: 'On the never-auto-reply list' };
+    if (onNoReplyList(email, noReplyList)) return { status: 'not_needed', note: 'On the never-auto-reply list' };
     if (dueThisRun.has(key)) return { status: 'not_needed', note: 'Already replying to this sender' };
     if (await store.repliedRecently(key, cooldownSince())) {
       return { status: 'not_needed', note: 'Auto-replied to this sender in the last 7 days' };
@@ -93,78 +121,117 @@ export async function runSync({
     return { status: settings.auto_reply_scope === 'requests' ? 'wait_ai' : 'due', note: '' };
   };
 
-  // Attach a new email to an existing request. The message row goes in first,
-  // so a retried failure can never count the same email twice.
-  async function addFollowUp(req, row, received) {
-    const inserted = await store.insertMessage({ ...row, request_id: req.id });
-    if (!inserted) return;
-    const count = (req.message_count || 1) + 1;
-    const decided = req.status === 'approved' || req.status === 'declined';
-    const adminOther = req.status === 'other' && req.kind_set_by === 'admin';
-    const patch = {
-      last_message_at: later(req.last_message_at, received),
-      message_count: count,
-      // The new email sits in the inbox, unread, until relabelled.
-      gmail_in_inbox: true,
-      gmail_seen: false,
-      gmail_dirty: true
-    };
-    if (decided || adminOther || count > MAX_AUTO_SUMMARIES) patch.needs_attention = true;
-    else Object.assign(patch, { ai_status: 'due', ai_attempts: 0 });
-    await store.updateRequest(req.id, patch);
-    report.followUps += 1;
+  const attentionNote = (req, count) =>
+    req.status === 'approved' || req.status === 'declined'
+      ? `New email after it was ${req.status}`
+      : req.status === 'other' && req.kind_set_by === 'admin'
+        ? 'New email in a conversation marked “not a request”'
+        : count > MAX_AUTO_SUMMARIES
+          ? 'Long conversation: the summary may not cover the newest emails'
+          : '';
+
+  // Attach a new email to an existing request. The request is updated first,
+  // with the count taken from the emails actually stored; then the email is
+  // saved. If that save fails, the retry counts and sets the same values
+  // again, so nothing is lost or counted twice. The update only applies to
+  // the state it was worked out from (the admin may decide meanwhile).
+  async function addFollowUp(req, message, received) {
+    for (let tries = 0; tries < 3; tries += 1) {
+      const stored = await store.messageCount(req.id);
+      const count = stored + 1;
+      const note = attentionNote(req, count);
+      const patch = {
+        last_message_at: later(req.last_message_at, received),
+        message_count: count,
+        // The new email sits in the inbox, unread, until relabelled.
+        gmail_in_inbox: true,
+        gmail_seen: false,
+        gmail_dirty: true,
+        ...(note ? { needs_attention: true, attention_note: note } : { ai_status: 'due', ai_attempts: 0 })
+      };
+      if (await store.updateRequest(req.id, patch, { eq: { status: req.status, kind_set_by: req.kind_set_by } })) {
+        await store.insertMessage({ ...message, request_id: req.id });
+        // stored = 0: the request's first email is only being saved now.
+        if (stored) report.followUps += 1;
+        else report.newRequests += 1;
+        return;
+      }
+      req = await store.getRequest(req.id);
+      if (!req) throw new Error('request disappeared');
+    }
+    throw new Error('request kept changing');
+  }
+
+  // Everything that only depends on the email itself. A failure here is the
+  // email's fault (it counts towards skipping it).
+  async function readEmail(m) {
+    try {
+      const parsed = await simpleParser(m.source, { skipImageLinks: true, skipTextLinks: true, skipTextToHtml: true });
+      const from = firstAddress(parsed.from);
+      const received = m.internalDate.toISOString();
+      const refs = refList(parsed.references).map(r => dbText(r, 300));
+      const inReplyTo = dbText(parsed.inReplyTo, 300);
+      const row = {
+        gmail_msgid: m.emailId,
+        gmail_thrid: m.threadId,
+        inbox_uid: m.uid,
+        message_id_header: dbText(parsed.messageId, 300),
+        in_reply_to: inReplyTo,
+        references_header: dbText(refs.join(' '), 4000),
+        from_name: from.name,
+        from_email: from.email,
+        reply_to_email: firstAddress(parsed.replyTo).email,
+        subject: dbText(parsed.subject, 300),
+        received_at: received,
+        auth_pass: authPass(parsed),
+        attachment_count: (parsed.attachments || []).length
+      };
+      const reason = automatedReason(parsed, selfEmail);
+      return {
+        parsed, row, reason, received, replyIds: [inReplyTo, ...refs],
+        body: reason ? '' : cleanBody(bodyText(parsed)),
+        replyAddress: replyRecipient(parsed),
+        key: replyKey(from.email)
+      };
+    } catch (err) {
+      throw asPoison(err);
+    }
   }
 
   async function ingest(m, dueThisRun) {
-    const parsed = await simpleParser(m.source, { skipImageLinks: true, skipTextLinks: true, skipTextToHtml: true });
-    const from = firstAddress(parsed.from);
-    const reason = automatedReason(parsed, selfEmail);
-    const received = m.internalDate.toISOString();
-    const refs = refList(parsed.references).map(r => dbText(r, 300));
-    const inReplyTo = dbText(parsed.inReplyTo, 300);
-    const row = {
-      gmail_msgid: m.emailId,
-      gmail_thrid: m.threadId,
-      inbox_uid: m.uid,
-      message_id_header: dbText(parsed.messageId, 300),
-      in_reply_to: inReplyTo,
-      references_header: dbText(refs.join(' '), 4000),
-      from_name: from.name,
-      from_email: from.email,
-      reply_to_email: firstAddress(parsed.replyTo).email,
-      subject: dbText(parsed.subject, 300),
-      received_at: received,
-      auth_pass: authPass(parsed),
-      attachment_count: (parsed.attachments || []).length
-    };
-    if (reason) {
-      await store.insertMessage({ ...row, automated_reason: reason, body_text: '' });
+    const e = await readEmail(m);
+    const { row, received } = e;
+    if (e.reason) {
+      await store.insertMessage({ ...row, automated_reason: e.reason, body_text: '' });
       report.automated += 1;
       return;
     }
-    const message = { ...row, automated_reason: '', body_text: cleanBody(bodyText(parsed)) };
+    const message = { ...row, automated_reason: '', body_text: e.body };
     let req = await store.requestByThread(m.threadId);
-    // A reply Gmail filed as a new conversation still belongs to its request.
-    if (!req) req = await store.requestForReplyIds([inReplyTo, ...refs]);
+    let related = null;
+    if (!req) {
+      const linked = await store.requestForReplyIds(e.replyIds);
+      if (linked && joinsRequest(linked, row.subject)) req = linked;
+      else if (linked) related = linked.id;
+    }
     if (req) {
       await addFollowUp(req, message, received);
       return;
     }
-    const replyAddress = replyRecipient(parsed);
-    const key = replyKey(replyAddress);
-    const auto = await autoReplyDecision({ parsed, key, received, authOk: row.auth_pass, dueThisRun });
+    const auto = await autoReplyDecision({ parsed: e.parsed, email: row.from_email, key: e.key, received, authOk: row.auth_pass, dueThisRun });
     req = await store.insertRequest({
       gmail_thrid: m.threadId,
       status: 'new',
       kind: 'unknown',
       from_name: row.from_name,
       from_email: row.from_email,
-      reply_address: replyAddress,
-      reply_key: key,
+      reply_address: e.replyAddress,
+      reply_key: e.key,
       subject: row.subject,
       first_message_at: received,
       last_message_at: received,
       message_count: 1,
+      related_request_id: related,
       ai_status: 'due',
       auto_reply_status: auto.status,
       auto_reply_error: auto.note,
@@ -174,30 +241,52 @@ export async function runSync({
     report.newRequests += 1;
   }
 
-  // An email that keeps failing to save (after POISON_RETRIES runs) is
-  // recorded as unreadable and skipped, so it can't block the inbox.
+  // An email that can't be read or saved (POISON_RETRIES runs in a row) is
+  // skipped so it can't block the inbox, and put in front of the admin
+  // ("Needs attention", with an Open in Gmail link) so it isn't lost.
   async function skipUnreadable(m) {
-    let who = '';
+    let who = { email: '', name: '' };
+    let subject = '';
     try {
       const parsed = await simpleParser(m.source);
-      const f = firstAddress(parsed.from);
-      who = f.email || f.name;
+      who = firstAddress(parsed.from);
+      subject = dbText(parsed.subject, 300);
     } catch {
       // ignore
+    }
+    const received = m.internalDate.toISOString();
+    const note = 'An email here couldn’t be read. Open it in Gmail.';
+    let req = await store.requestByThread(m.threadId);
+    if (req) {
+      req = await store.updateRequest(req.id, {
+        needs_attention: true, attention_note: note, last_message_at: later(req.last_message_at, received),
+        gmail_in_inbox: true, gmail_seen: false, gmail_dirty: true
+      });
+    } else {
+      const base = {
+        gmail_thrid: m.threadId, status: 'pending', kind: 'unknown', first_message_at: received, last_message_at: received,
+        message_count: 1, needs_attention: true, attention_note: note, ai_status: 'failed',
+        ai_error: 'This email couldn’t be read. Open it in Gmail.', auto_reply_status: 'not_needed',
+        auto_reply_error: 'The email couldn’t be read', gmail_dirty: false
+      };
+      try {
+        req = await store.insertRequest({ ...base, from_name: who.name, from_email: who.email, subject });
+      } catch (err) {
+        if (!dataError(err)) throw err;
+        req = await store.insertRequest(base); // the sender's details were the problem
+      }
     }
     await store.insertMessage({
       gmail_msgid: m.emailId,
       gmail_thrid: m.threadId,
       inbox_uid: m.uid,
-      from_email: dbText(who, 320),
-      received_at: m.internalDate.toISOString(),
+      request_id: req?.id ?? null,
+      received_at: received,
       automated_reason: 'unreadable',
       body_text: ''
     });
     report.skippedUnreadable += 1;
-    report.errors.push(
-      `One email${who ? ` from ${who}` : ''} (${m.internalDate.toDateString()}) couldn't be read and was skipped. It is still in Gmail.`
-    );
+    report.errors.push(`One email (${m.internalDate.toDateString()}) couldn’t be read. It is under Needs attention.`);
   }
 
   async function phaseRead() {
@@ -206,9 +295,13 @@ export async function runSync({
     const res = await gmail.readInbox({ storedValidity: settings.inbox_uidvalidity, storedLastUid, since });
     const known = await store.knownMessageIds(res.messages.map(m => m.emailId));
     const dueThisRun = new Set();
+    const sameValidity = settings.inbox_uidvalidity === res.validity;
     let lastOk = null;
     let complete = true;
-    let fail = { uid: settings.inbox_fail_uid == null ? null : Number(settings.inbox_fail_uid), count: settings.inbox_fail_count || 0 };
+    // Strikes against one email (by UID; reset when Gmail renumbers).
+    let fail = sameValidity
+      ? { uid: settings.inbox_fail_uid == null ? null : Number(settings.inbox_fail_uid), count: settings.inbox_fail_count || 0 }
+      : { uid: null, count: 0 };
     for (const m of res.messages) {
       if (timeLeft() < 15_000) {
         complete = false;
@@ -222,16 +315,18 @@ export async function runSync({
         lastOk = m.uid;
         if (fail.uid === m.uid) fail = { uid: null, count: 0 };
       } catch (err) {
-        const count = fail.uid === m.uid ? fail.count + 1 : 1;
-        fail = { uid: m.uid, count };
-        if (count >= POISON_RETRIES) {
-          try {
-            await skipUnreadable(m);
-            lastOk = m.uid;
-            fail = { uid: null, count: 0 };
-            continue;
-          } catch {
-            // the database itself is failing: stop and retry next run
+        if (dataError(err)) {
+          const count = fail.uid === m.uid ? fail.count + 1 : 1;
+          fail = { uid: m.uid, count };
+          if (count >= POISON_RETRIES) {
+            try {
+              await skipUnreadable(m);
+              lastOk = m.uid;
+              fail = { uid: null, count: 0 };
+              continue;
+            } catch {
+              // the database itself is failing: stop and retry next run
+            }
           }
         }
         complete = false;
@@ -239,7 +334,6 @@ export async function runSync({
         break;
       }
     }
-    const sameValidity = settings.inbox_uidvalidity === res.validity;
     const cursor = complete ? res.lastUid : lastOk ?? (sameValidity ? storedLastUid : null);
     await store.updateSettings({
       inbox_uidvalidity: res.validity,
@@ -255,8 +349,13 @@ export async function runSync({
   // arrived, and another request from the same sender may have been answered.
   async function autoReplyBlocked(r) {
     if (r.auto_reply_forced) return '';
+    if (r.status === 'approved' || r.status === 'declined') return 'Already answered';
     if (!settings.auto_reply_enabled) return 'Auto-reply is off';
-    if (onNoReplyList(r.reply_key || r.reply_address, noReplyList)) return 'On the never-auto-reply list';
+    if (settings.auto_reply_since && new Date(r.first_message_at) < new Date(settings.auto_reply_since)) {
+      return 'Arrived before auto-replies were turned on';
+    }
+    if (ageMs(r.first_message_at, now().getTime()) > LIMITS.autoReplyMaxHours * 3_600_000) return 'Too late for an automatic reply';
+    if (onNoReplyList(r.from_email, noReplyList)) return 'On the never-auto-reply list';
     if (await store.repliedRecently(r.reply_key, cooldownSince(), r.id)) return 'Auto-replied to this sender in the last 7 days';
     return '';
   }
@@ -270,6 +369,11 @@ export async function runSync({
         return;
       }
     }
+    const msgs = (await store.messagesFor(r.id)).filter(m => !m.automated_reason);
+    // The request's email isn't saved yet (a failed save, retried next run):
+    // wait for it so the reply lands in the same conversation, for a while.
+    if (!msgs.length && ageMs(r.created_at, now().getTime()) < LIMITS.unthreadedAfterMinutes * 60_000) return;
+    const parent = [...msgs].reverse().find(m => m.message_id_header) || msgs[msgs.length - 1] || null;
     const messageId = newMessageId(cfg.tag, r.id);
     const claimed = await store.updateRequest(
       r.id,
@@ -282,8 +386,6 @@ export async function runSync({
       { eq: { [`${prefix}_status`]: 'due' } }
     );
     if (!claimed) return;
-    const msgs = (await store.messagesFor(r.id)).filter(m => !m.automated_reason);
-    const parent = [...msgs].reverse().find(m => m.message_id_header) || msgs[msgs.length - 1] || null;
     const name = firstName(r.from_name);
     const text =
       prefix === 'auto_reply'
@@ -297,7 +399,9 @@ export async function runSync({
     const tally = prefix === 'auto_reply' ? report.replies : report.approvals;
     try {
       await smtp.send({
-        to: r.reply_address,
+        // Automatic replies: only the verified sender. Approval emails: the
+        // address the admin saw on the card.
+        to: prefix === 'auto_reply' ? r.from_email : r.reply_address,
         subject: replySubject(parent?.subject ?? r.subject),
         text,
         ...threadHeaders(parent),
@@ -339,29 +443,42 @@ export async function runSync({
 
   // A claim older than 10 minutes: a send that may or may not have gone out.
   // Found in Sent Mail -> sent. Not there -> it didn't go out: try again
-  // (up to the attempt limit), then leave it to the admin.
+  // (up to the attempt limit), then leave it to the admin. If Sent Mail can't
+  // be checked for a day, the admin gets "unclear" with a Resend button.
   async function reconcileClaims(prefix) {
-    const before = new Date(now().getTime() - LIMITS.staleClaimMinutes * 60_000).toISOString();
+    const nowMs = now().getTime();
+    const before = new Date(nowMs - LIMITS.staleClaimMinutes * 60_000).toISOString();
+    let warned = false;
     for (const r of await store.listStaleClaims(prefix, before)) {
       let found = null;
-      try {
-        found = await gmail.sentHasMessageId(r[`${prefix}_message_id`]);
-      } catch {
-        found = null;
+      if (imapOk) {
+        try {
+          found = await gmail.sentHasMessageId(r[`${prefix}_message_id`]);
+        } catch (err) {
+          if (err?.code === 'AllMailHidden') report.errors.push(describeImapError(err));
+          found = null;
+        }
       }
-      if (found === null) continue;
+      if (found === null) {
+        if (!warned) report.errors.push('Could not check Sent Mail for an email that may not have gone out. It will be checked again.');
+        warned = true;
+        if (ageMs(r[`${prefix}_claimed_at`], nowMs) < LIMITS.claimCheckHours * 3_600_000) continue;
+      }
       const attempts = r[`${prefix}_attempts`] || 1;
-      const patch = found
-        ? { [`${prefix}_status`]: 'sent', [SEND[prefix].sentAt]: r[`${prefix}_claimed_at`], [`${prefix}_error`]: '' }
-        : attempts < LIMITS.sendAttempts
-          ? { [`${prefix}_status`]: 'due', [`${prefix}_error`]: 'Retrying: the last try did not go out.' }
-          : { [`${prefix}_status`]: 'unknown', [`${prefix}_error`]: 'Could not confirm this email went out. Check Sent Mail.' };
+      const patch =
+        found === null
+          ? { [`${prefix}_status`]: 'unknown', [`${prefix}_error`]: 'Could not check Sent Mail. Look there, and resend if it isn’t there.' }
+          : found
+            ? { [`${prefix}_status`]: 'sent', [SEND[prefix].sentAt]: r[`${prefix}_claimed_at`], [`${prefix}_error`]: '' }
+            : attempts < LIMITS.sendAttempts
+              ? { [`${prefix}_status`]: 'due', [`${prefix}_error`]: 'Retrying: the last try did not go out.' }
+              : { [`${prefix}_status`]: 'unknown', [`${prefix}_error`]: 'Could not confirm this email went out. Check Sent Mail.' };
       await store.updateRequest(r.id, patch, { eq: { [`${prefix}_status`]: 'claimed' } });
     }
   }
 
   async function phaseSend(prefix) {
-    if (imapOk) await reconcileClaims(prefix);
+    await reconcileClaims(prefix);
     for (const r of await store.listByField(`${prefix}_status`, 'due', { limit: LIMITS.sendsPerRun })) {
       if (smtpBlocked || timeLeft() < 8000) {
         report.more = true;
@@ -372,20 +489,44 @@ export async function runSync({
   }
 
   // ---------- C. Claude ----------
+  // A "requests only" auto-reply waits for the summary. If the admin sorted
+  // the request meanwhile, settle it from the request as it is now.
+  async function settleWaitAi(cur) {
+    if (cur?.auto_reply_status !== 'wait_ai') return;
+    const other = cur.kind === 'other';
+    await store.updateRequest(
+      cur.id,
+      { auto_reply_status: other ? 'not_needed' : 'due', auto_reply_error: other ? 'Not a request' : '' },
+      { eq: { auto_reply_status: 'wait_ai', kind: cur.kind } }
+    );
+  }
+
   async function summarize(r) {
+    // No summary after the last try: the admin reads the email instead. Only
+    // against the request as it was (the admin's own choice wins).
+    const giveUp = async (snap, message) => {
+      const ai_error = String(message || 'Summary failed').slice(0, 200);
+      const full = { ai_error, ai_status: 'failed', gmail_dirty: true };
+      const guard = { status: snap.status, kind: snap.kind };
+      if (snap.status === 'new') full.status = 'pending';
+      if (snap.auto_reply_status === 'wait_ai') {
+        full.auto_reply_status = 'due';
+        guard.auto_reply_status = 'wait_ai';
+      }
+      if (!(await store.updateRequest(snap.id, full, { eq: guard, in: { status: UNDECIDED } }))) {
+        await settleWaitAi(await store.updateRequest(snap.id, { ai_error, ai_status: 'failed', gmail_dirty: true }, { in: { status: UNDECIDED } }));
+      }
+      report.ai.failed += 1;
+    };
+    // Runs that died mid-call used up the tries without an error coming back.
+    if ((r.ai_attempts || 0) >= LIMITS.aiAttempts) return giveUp(r, 'The summary didn’t finish after several tries.');
     // Count the attempt first: a run killed mid-call still uses one up.
     const attempts = (r.ai_attempts || 0) + 1;
     const marked = await store.updateRequest(r.id, { ai_attempts: attempts }, { eq: { ai_status: 'due' }, in: { status: UNDECIDED } });
     if (!marked) return;
     const fail = async message => {
-      const patch = { ai_error: String(message || 'Summary failed').slice(0, 200) };
-      if (attempts >= LIMITS.aiAttempts) {
-        patch.ai_status = 'failed';
-        if (r.status === 'new') patch.status = 'pending';
-        if (r.auto_reply_status === 'wait_ai') patch.auto_reply_status = 'due';
-        patch.gmail_dirty = true;
-      }
-      await store.updateRequest(r.id, patch, { in: { status: UNDECIDED } });
+      if (attempts >= LIMITS.aiAttempts) return giveUp(marked, message);
+      await store.updateRequest(r.id, { ai_error: String(message || 'Summary failed').slice(0, 200) }, { in: { status: UNDECIDED } });
       report.ai.failed += 1;
     };
     const msgs = (await store.messagesFor(r.id)).filter(m => !m.automated_reason);
@@ -410,17 +551,23 @@ export async function runSync({
       ai_summary: fields.summary, ai_fields: fields, ai_model: dbText(out.model, 80), ai_status: 'done', ai_error: '', ai_at: iso(),
       gmail_dirty: true
     };
-    let { status, kind } = r;
-    if (r.kind_set_by !== 'admin' && (status === 'new' || kind !== 'request')) {
+    const snap = marked;
+    let { status, kind } = snap;
+    if (snap.kind_set_by !== 'admin' && (status === 'new' || kind !== 'request')) {
       kind = fields.kind;
       status = fields.kind === 'request' ? 'pending' : 'other';
     }
     const patch = { ...summary, kind, status };
-    if (r.auto_reply_status === 'wait_ai') patch.auto_reply_status = kind === 'request' ? 'due' : 'not_needed';
+    const guard = { status: snap.status, kind: snap.kind };
+    if (snap.auto_reply_status === 'wait_ai') {
+      patch.auto_reply_status = kind === 'request' ? 'due' : 'not_needed';
+      if (kind !== 'request') patch.auto_reply_error = 'Not a request';
+      guard.auto_reply_status = 'wait_ai';
+    }
     // Only if nobody changed it meanwhile; otherwise keep their choice and
     // just store the summary.
-    const done = await store.updateRequest(r.id, patch, { eq: { status: r.status, kind: r.kind } });
-    if (!done) await store.updateRequest(r.id, summary, { in: { status: UNDECIDED } });
+    const done = await store.updateRequest(r.id, patch, { eq: guard });
+    if (!done) await settleWaitAi(await store.updateRequest(r.id, summary, { in: { status: UNDECIDED } }));
     report.ai.done += 1;
   }
 
@@ -460,6 +607,10 @@ export async function runSync({
       let found = true;
       if (add.length || seen || r.gmail_label !== 'none' || !t.inInbox) {
         ({ found } = await gmail.setThreadState(r.gmail_thrid, { add, remove, seen }));
+        // Replies Gmail filed as another conversation follow the request.
+        for (const tid of await store.threadsFor(r.id)) {
+          if (tid !== r.gmail_thrid) await gmail.setThreadState(tid, { add, remove, seen });
+        }
       }
       await store.updateRequest(
         r.id,

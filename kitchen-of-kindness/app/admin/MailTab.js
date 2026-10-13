@@ -21,6 +21,9 @@ const VIEWS = [
   { key: 'other', label: 'Other' }
 ];
 const UNDO_MS = 5000;
+const NO_ITEMS = []; // one stable empty list (a new [] each render loops the effects)
+const STILL_CHECKING = 'Still checking the address on the map. Try again in a moment.';
+const OPEN = ['new', 'pending', 'other']; // not decided yet
 const IDLE_SYNC_MS = 15000;
 const POLL_MS = 60000;
 const INSTRUCTION_OPTIONS = ['Leave at door', 'Ring doorbell', 'Call when arrive', 'Hand to resident'];
@@ -88,8 +91,15 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
   const [toast, setToast] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showEmail, setShowEmail] = useState({});
+  const [flushing, setFlushing] = useState(false);
   const timers = useRef(new Map());
   const entries = useRef(new Map());
+  // Decisions being sent right now, and whether sending is paused (the
+  // session ran out: they wait, still undoable, until the next login).
+  const inflight = useRef(new Set());
+  const paused = useRef(false);
+  const locking = useRef(false);
+  const settingsDraft = useRef(null);
   const idleTimer = useRef(null);
   const toastTimer = useRef(null);
   const geoRef = useRef(geo);
@@ -103,7 +113,7 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
   const onFamiliesChangedRef = useRef(onFamiliesChanged);
   onFamiliesChangedRef.current = onFamiliesChanged;
 
-  const items = list.view === view ? list.items : [];
+  const items = list.view === view ? list.items : NO_ITEMS;
   const loading = list.view !== view;
 
   const showToast = useCallback((text, kind = 'ok') => {
@@ -193,21 +203,29 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
 
   // Drafts (the editable family form) start from Claude's fields; rebuilt
   // when the summary changes unless the admin already edited them.
+  // Both return the same object when nothing changed, so React stops there.
   useEffect(() => {
+    if (!items.length) return;
     setDrafts(prev => {
-      const next = { ...prev };
+      let next = prev;
       for (const it of items) {
-        if (it.status !== 'pending' && it.status !== 'new' && it.status !== 'other') continue;
+        if (!OPEN.includes(it.status)) continue;
         const have = prev[it.id];
         if (!have || (!have.edited && have.aiAt !== it.ai_at)) {
+          if (next === prev) next = { ...prev };
           next[it.id] = { ...familyDraft(it.ai_fields), edited: false, aiAt: it.ai_at };
         }
       }
       return next;
     });
     setGeo(prev => {
-      const next = { ...prev };
-      for (const it of items) if (it.geo && !next[it.id]) next[it.id] = it.geo;
+      let next = prev;
+      for (const it of items) {
+        if (it.geo && !next[it.id]) {
+          if (next === prev) next = { ...prev };
+          next[it.id] = it.geo;
+        }
+      }
       return next;
     });
   }, [items]);
@@ -236,6 +254,7 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
     // Only the answer for the address still in the box counts.
     if (geoRef.current[id]?.address !== text) return;
     setGeo(g => (g[id]?.address === text ? { ...g, [id]: result } : g));
+    setCardErrors(e => (e[id]?.[0] === STILL_CHECKING ? { ...e, [id]: null } : e));
     // A failed lookup isn't saved: it's tried again next time.
     if (result.status !== 'error') {
       api(`/api/mail/requests/${id}`, { method: 'POST', body: JSON.stringify({ action: 'save_geo', geo: result }) });
@@ -278,34 +297,55 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
       entries.current.delete(entry.key);
       timers.current.delete(entry.key);
       setQueue(q => q.filter(x => x.key !== entry.key));
-      const body =
-        entry.kind === 'approve'
-          ? { action: 'approve', family: entry.family, sendEmail: entry.sendEmail }
-          : { action: 'decline' };
-      const r = await api(`/api/mail/requests/${entry.id}`, { method: 'POST', body: JSON.stringify(body) });
+      const approving = entry.kind === 'approve';
+      // While it's being saved it still counts for duplicate checks.
+      const placeholder = `saving-${entry.key}`;
+      const dropPlaceholder = () => setJustApproved(l => l.filter(f => f.family_id !== placeholder));
+      if (approving) setJustApproved(l => [...l, { ...entry.family, family_id: placeholder, active: true }]);
+      const body = approving ? { action: 'approve', family: entry.family, sendEmail: entry.sendEmail } : { action: 'decline' };
+      const request = api(`/api/mail/requests/${entry.id}`, { method: 'POST', body: JSON.stringify(body) });
+      inflight.current.add(request);
+      let r;
+      try {
+        r = await request;
+      } finally {
+        inflight.current.delete(request);
+      }
       if (!r.ok) {
-        unhide(entry.id);
+        if (approving) dropPlaceholder();
         if (r.status === 401) {
-          setCardErrors(e => ({ ...e, [entry.id]: ['Not saved: Mail was locked. Log in and decide again.'] }));
+          // The session ran out: keep the decision waiting (hidden, undoable)
+          // and send it after the next login.
+          paused.current = true;
+          entries.current.set(entry.key, entry);
+          setQueue(q => [...q, entry]);
           setSession('login');
           return;
         }
-        setCardErrors(e => ({ ...e, [entry.id]: r.data?.errors || [r.data?.message || 'Could not save. Try again.'] }));
-        showToast(`Couldn’t ${entry.kind === 'approve' ? 'add the family' : 'decline'}. The request is back in the list.`, 'warn');
-        return;
-      }
-      if (r.data?.shadow) {
-        // Practice run: nothing changed on the server, so the card comes back.
         unhide(entry.id);
-        showToast('Shadow mode: nothing was changed (this is a practice run).', 'info');
+        setCardErrors(e => ({ ...e, [entry.id]: r.data?.errors || [r.data?.message || 'Could not save. Try again.'] }));
+        // Open it so the error shows, unless the admin is typing in another card.
+        if (!typingIn(document.activeElement)) setFocusId(entry.id);
+        showToast(`Couldn’t ${approving ? 'add the family' : 'decline'}. The request is back in the list.`, 'warn');
         return;
       }
-      if (entry.kind === 'approve' && r.data?.family_id) {
-        showToast(`Family #${r.data.family_id} added${entry.sendEmail ? ' · approval email goes out shortly' : ''}`, 'ok');
-        // Until the families list reloads, count this family for duplicate checks.
-        setJustApproved(list => [...list, { ...entry.family, family_id: r.data.family_id, active: true }]);
-        onFamiliesChangedRef.current?.();
+      if (r.data?.shadow || r.data?.dryRun) {
+        // Practice: nothing changed on the server, so the card comes back.
+        if (approving) dropPlaceholder();
+        unhide(entry.id);
+        showToast(
+          r.data.shadow ? 'Shadow mode: nothing was changed (this is a practice run).' : 'Dry run: nothing was changed.',
+          'info'
+        );
+        return;
       }
+      if (approving && r.data?.family_id) {
+        const to = r.data.request?.reply_address;
+        showToast(`Family #${r.data.family_id} added${entry.sendEmail && to ? ` · approval email to ${to} goes out shortly` : ''}`, 'ok');
+        // Until the families list reloads, count this family for duplicate checks.
+        setJustApproved(l => l.map(f => (f.family_id === placeholder ? { ...entry.family, family_id: r.data.family_id, active: true } : f)));
+        onFamiliesChangedRef.current?.();
+      } else if (approving) dropPlaceholder();
       setCounts(c => {
         const next = { ...c, pending: Math.max(0, (c.pending || 0) - 1) };
         const key = entry.kind === 'approve' ? 'approved' : 'declined';
@@ -317,14 +357,41 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
     [scheduleIdleSync, showToast]
   );
 
-  // Send everything still waiting now (used before locking Mail).
+  // Send everything still waiting now, and wait for sends already going
+  // (used before locking Mail). Reads the live queue each time, so a decision
+  // a timer already sent, or one that was undone, is never sent again.
   const flushQueue = useCallback(async () => {
-    const waiting = [...entries.current.values()];
-    for (const entry of waiting) {
+    while (entries.current.size && !paused.current) {
+      const entry = entries.current.values().next().value;
       clearTimeout(timers.current.get(entry.key));
       await commit(entry);
     }
+    await Promise.allSettled([...inflight.current]);
   }, [commit]);
+
+  const lockMail = async () => {
+    if (locking.current) return;
+    locking.current = true;
+    setFlushing(true);
+    try {
+      await flushQueue(); // save decisions still in their 5 seconds
+      if (paused.current) return; // already logged out; they wait for the login
+      await logoutAdminServer();
+      setSession('login');
+    } finally {
+      locking.current = false;
+      setFlushing(false);
+    }
+  };
+
+  // Back from a login: decisions that were waiting get a fresh 5 seconds.
+  useEffect(() => {
+    if (session !== 'ready' || !paused.current) return;
+    paused.current = false;
+    for (const entry of entries.current.values()) {
+      if (!timers.current.has(entry.key)) timers.current.set(entry.key, setTimeout(() => commit(entry), UNDO_MS));
+    }
+  }, [session, commit]);
 
   const enqueue = useCallback(
     (item, kind, extra = {}) => {
@@ -344,7 +411,7 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
 
   const undo = useCallback(key => {
     const entry = entries.current.get(key);
-    if (!entry) return;
+    if (!entry || locking.current) return;
     clearTimeout(timers.current.get(key));
     timers.current.delete(key);
     entries.current.delete(key);
@@ -390,7 +457,7 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
       const needsMap = addr && !isPickup({ address: addr }) && geocoderAvailable();
       if (needsMap && (!g || g.address !== addr || g.status === 'looking')) {
         if (!g || g.address !== addr) lookup(item.id, addr);
-        setCardErrors(e => ({ ...e, [item.id]: ['Still checking the address on the map. Try again in a moment.'] }));
+        setCardErrors(e => ({ ...e, [item.id]: [STILL_CHECKING] }));
         setFocusId(item.id);
         return;
       }
@@ -424,6 +491,7 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
     }
     if (!r.ok) showToast(r.data?.message || 'Could not save. Try again.', 'warn');
     else if (r.data?.shadow) showToast('Shadow mode: nothing was changed (this is a practice run).', 'info');
+    else if (r.data?.dryRun) showToast('Dry run: nothing was changed.', 'info');
     else if (okText) showToast(okText, 'ok');
     load();
     scheduleIdleSync();
@@ -468,7 +536,7 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
     const known = new Set(families.map(f => f.family_id));
     const waiting = queue
       .filter(e => e.kind === 'approve')
-      .map(e => ({ ...e.family, family_id: 'new', active: true }));
+      .map(e => ({ ...e.family, family_id: `waiting-${e.key}`, active: true }));
     return [...families, ...justApproved.filter(f => !known.has(f.family_id)), ...waiting];
   }, [families, justApproved, queue]);
 
@@ -513,6 +581,12 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
       >
         <h3>🔒 Mail</h3>
         <p>The emails include people’s private details, so Mail asks for the admin password on each device.</p>
+        {queue.length > 0 && (
+          <p className="mail-notice warn">
+            {queue.length === 1 ? '1 decision isn’t saved yet' : `${queue.length} decisions aren’t saved yet`}. Log in to save
+            {queue.length === 1 ? ' it' : ' them'} (you can still undo).
+          </p>
+        )}
         <input type="password" placeholder="Admin password" value={password} onChange={e => setPassword(e.target.value)} autoFocus />
         <button type="submit" className="mail-btn primary">Open Mail</button>
         {loginError && <p className="password-error">{loginError}</p>}
@@ -528,7 +602,9 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
   if (sync?.mode === 'shadow') {
     notices.push(['info', 'Shadow mode: reading and summarizing only. Nothing is sent, Gmail isn’t changed, and Yes doesn’t add families.']);
   }
-  if (sync?.dry_run) notices.push(['info', 'Dry run: emails are read and summarized here, but nothing is sent and Gmail isn’t changed.']);
+  if (sync?.dry_run) {
+    notices.push(['info', 'Dry run: this copy reads and summarizes mail but never sends email or changes Gmail, and Yes / No change nothing.']);
+  }
   if (sync?.last_sync_error) notices.push(['error', sync.last_sync_error]);
   if (syncError) notices.push(['error', syncError]);
   if (banner) notices.push(['error', banner]);
@@ -560,17 +636,8 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
           <button type="button" className="mail-btn" onClick={() => setSettingsOpen(o => !o)}>
             ⚙ Settings
           </button>
-          <button
-            type="button"
-            className="mail-btn"
-            title="Lock Mail on this device"
-            onClick={async () => {
-              await flushQueue(); // save decisions still in their 5 seconds
-              await logoutAdminServer();
-              setSession('login');
-            }}
-          >
-            🔒
+          <button type="button" className="mail-btn" title="Lock Mail on this device" onClick={lockMail} disabled={flushing}>
+            {flushing ? 'Saving…' : '🔒'}
           </button>
         </div>
       </div>
@@ -583,11 +650,10 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
         <MailSettings
           onSaved={s => {
             setSync(s);
-            // A mode change can bring practised requests back: show the real list.
-            const waiting = new Set([...entries.current.values()].map(e => e.id));
-            setHidden(h => new Set([...h].filter(id => waiting.has(id))));
             load();
           }}
+          onUnauthorized={() => setSession('login')}
+          draft={settingsDraft}
           showToast={showToast}
         />
       )}
@@ -636,6 +702,7 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
                   onApprove={sendEmail => approve(item, sendEmail)}
                   onDecline={() => decline(item)}
                   onNotRequest={() => act(item, { action: 'reclassify', kind: 'other' }, 'Moved to Other')}
+                  onSummarize={() => act(item, { action: 'summarize' }, 'Claude will read it again on the next check')}
                   onResend={() => act(item, { action: 'resend', which: 'auto_reply' }, 'The reply will be sent on the next check')}
                 />
               ))}
@@ -654,11 +721,11 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
                 {newest.kind === 'approve' ? `Adding ${newest.who}…` : `Declining ${newest.who}…`}
                 {queue.length > 1 && ` (+${queue.length - 1} more)`}
               </span>
-              <button type="button" onClick={() => undo(newest.key)}>
+              <button type="button" onClick={() => undo(newest.key)} disabled={flushing}>
                 Undo
               </button>
               {queue.length > 1 && (
-                <button type="button" onClick={undoAll}>
+                <button type="button" onClick={undoAll} disabled={flushing}>
                   Undo all
                 </button>
               )}
@@ -710,9 +777,14 @@ function EmailThread({ item }) {
   );
 }
 
+// A summary can be asked for again on long conversations, failed summaries,
+// and requests flagged for attention.
+const canResummarize = item =>
+  OPEN.includes(item.status) && (item.needs_attention || item.ai_status === 'failed' || item.message_count > 8);
+
 function RequestCard({
   item, focused, draft, geo, errors, families, showEmail, onToggleEmail, onFocus, onEdit, onAddressFocus, onAddressBlur,
-  onRetryMap, onUseMapAddress, onApprove, onDecline, onNotRequest, onResend
+  onRetryMap, onUseMapAddress, onApprove, onDecline, onNotRequest, onResend, onSummarize
 }) {
   const f = item.ai_fields || {};
   const dupes = useMemo(
@@ -732,10 +804,15 @@ function RequestCard({
   );
   const summary =
     item.ai_status === 'done' ? item.ai_summary
-      : item.ai_status === 'failed' ? 'Couldn’t summarize this one. Read the email below.'
+      : item.ai_status === 'failed'
+        ? item.messages && !item.messages.length
+          ? 'This email couldn’t be read here. Open it in Gmail.'
+          : 'Couldn’t summarize this one. Read the email below.'
         : 'Summarizing…';
   const badges = (
     <div className="mail-badges">
+      {item.needs_attention && item.attention_note && <span className="mail-badge red">{item.attention_note}</span>}
+      {item.related_request_id && <span className="mail-badge orange">Follows an earlier request · same household?</span>}
       {item.kind === 'unknown' && item.ai_status !== 'due' && <span className="mail-badge orange">Not sorted</span>}
       {(f.missing || []).map(m => (
         <span key={m} className="mail-badge red">{MISSING_LABEL[m] || m}</span>
@@ -745,7 +822,7 @@ function RequestCard({
       {f.language && !/^english$/i.test(f.language) && <span className="mail-badge">{f.language}</span>}
       {dupes.map(d => (
         <span key={d.family_id} className="mail-badge orange">
-          Possible duplicate of #{d.family_id}
+          Possible duplicate of {typeof d.family_id === 'number' ? `#${d.family_id}` : 'a family being added'}
           {d.active ? '' : ' (inactive)'} · {d.reasons.join(', ')}
         </span>
       ))}
@@ -901,6 +978,11 @@ function RequestCard({
           <button type="button" className="mail-link" onClick={onNotRequest}>
             Not a request
           </button>
+          {canResummarize(item) && (
+            <button type="button" className="mail-link" onClick={onSummarize}>
+              Summarize again
+            </button>
+          )}
           <a className="mail-link" href={item.gmail_url} target="_blank" rel="noreferrer">
             Open in Gmail
           </a>
@@ -929,7 +1011,9 @@ function SimpleList({ view, items, act, showEmail, setShowEmail }) {
                 {view === 'other' && f.other_topic && TOPIC_LABEL[f.other_topic] && (
                   <span className="mail-badge">{TOPIC_LABEL[f.other_topic]}</span>
                 )}
-                {view === 'attention' && <span className="mail-badge red">New email after a decision ({item.status})</span>}
+                {view === 'attention' && (
+                  <span className="mail-badge red">{item.attention_note || `New email after a decision (${item.status})`}</span>
+                )}
                 <span className="mail-when">{timeAgo(view === 'approved' || view === 'declined' ? item.decided_at : item.last_message_at)}</span>
               </div>
               <p className="mail-summary">
@@ -966,6 +1050,11 @@ function SimpleList({ view, items, act, showEmail, setShowEmail }) {
                   It’s a request
                 </button>
               )}
+              {view === 'attention' && canResummarize(item) && (
+                <button type="button" className="mail-btn" onClick={() => act(item, { action: 'summarize' }, 'Claude will read it again on the next check')}>
+                  Summarize again
+                </button>
+              )}
               {view === 'attention' && (
                 <button type="button" className="mail-btn" onClick={() => act(item, { action: 'handled' }, 'Marked as handled')}>
                   Mark handled
@@ -982,21 +1071,43 @@ function SimpleList({ view, items, act, showEmail, setShowEmail }) {
   );
 }
 
-function MailSettings({ onSaved, showToast }) {
+// draft: a ref owned by MailTab that keeps unsaved changes across a
+// "log in again" (this panel unmounts while the login form shows).
+function MailSettings({ onSaved, onUnauthorized, draft, showToast }) {
   const [data, setData] = useState(null);
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState('');
+
+  const loadSettings = useCallback(async () => {
+    setLoadError('');
+    const r = await api('/api/mail/settings');
+    if (r.status === 401) return onUnauthorized();
+    if (!r.ok) return setLoadError(r.data?.message || 'Could not load the settings.');
+    setData(r.data);
+    setForm(draft.current || r.data.settings);
+    draft.current = null;
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    (async () => {
-      const r = await api('/api/mail/settings');
-      if (r.ok) {
-        setData(r.data);
-        setForm(r.data.settings);
-      }
-    })();
-  }, []);
+    loadSettings();
+  }, [loadSettings]);
 
+  const loggedOut = () => {
+    draft.current = form;
+    onUnauthorized();
+  };
+
+  if (loadError) {
+    return (
+      <div className="mail-settings">
+        <p>{loadError}</p>
+        <button type="button" className="mail-btn" onClick={loadSettings}>
+          Try again
+        </button>
+      </div>
+    );
+  }
   if (!form) return <div className="mail-settings">Loading settings…</div>;
   const set = patch => setForm(f => ({ ...f, ...patch }));
 
@@ -1011,6 +1122,7 @@ function MailSettings({ onSaved, showToast }) {
     setSaving(true);
     const r = await api('/api/mail/settings', { method: 'PUT', body: JSON.stringify(form) });
     setSaving(false);
+    if (r.status === 401) return loggedOut();
     if (!r.ok) {
       showToast(r.data?.message || 'Could not save the settings.', 'warn');
       return;
@@ -1022,6 +1134,7 @@ function MailSettings({ onSaved, showToast }) {
 
   const test = async which => {
     const r = await api('/api/mail/settings', { method: 'POST', body: JSON.stringify({ action: 'test_email', which }) });
+    if (r.status === 401) return loggedOut();
     if (r.ok) showToast(r.data.dryRun ? 'Test built (dry run: not actually sent).' : `Test sent to ${r.data.to}`, 'ok');
     else showToast(r.data?.message || 'Could not send the test.', 'warn');
   };

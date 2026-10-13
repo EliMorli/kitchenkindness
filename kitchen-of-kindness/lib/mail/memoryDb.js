@@ -4,7 +4,7 @@
 const DEFAULTS = {
   mail_requests: () => ({
     kind: 'unknown', kind_set_by: 'ai', status: 'new', from_name: '', from_email: '', reply_address: '', reply_key: '', subject: '',
-    message_count: 1, needs_attention: false, ai_status: 'due', ai_attempts: 0, ai_summary: '', ai_fields: {},
+    message_count: 1, needs_attention: false, attention_note: '', related_request_id: null, ai_status: 'due', ai_attempts: 0, ai_summary: '', ai_fields: {},
     ai_model: '', ai_error: '', ai_at: null, geo: null, auto_reply_status: 'not_needed', auto_reply_attempts: 0, auto_reply_forced: false,
     auto_reply_claimed_at: null, auto_reply_message_id: '', auto_replied_at: null, auto_reply_error: '',
     family_id: null, approved_family: null, decided_at: null, approval_email_status: 'not_needed',
@@ -106,11 +106,13 @@ export function createMemoryDb({ now = () => new Date(), settings = {}, familySt
     },
     async rpc(name, args) {
       if (name === 'mail_counts') {
-        const c = { pending: 0, approved: 0, declined: 0, other: 0, attention: 0 };
+        const c = { pending: 0, approved: 0, declined: 0, other: 0, attention: 0, badge: 0 };
         for (const r of tables.mail_requests) {
-          if (r.status === 'new' || r.status === 'pending') c.pending += 1;
+          const open = r.status === 'new' || r.status === 'pending';
+          if (open) c.pending += 1;
           else if (c[r.status] !== undefined) c[r.status] += 1;
           if (r.needs_attention) c.attention += 1;
+          if (open || r.needs_attention) c.badge += 1;
         }
         return c;
       }
@@ -133,8 +135,9 @@ export function createMemoryDb({ now = () => new Date(), settings = {}, familySt
         tables.families.push({ id: ++seq.families, family_id: id, active: true, ...clone(fam) });
         Object.assign(r, {
           status: 'approved', kind: 'request', kind_set_by: 'admin', family_id: id, approved_family: clone(fam), decided_at: iso(),
-          needs_attention: false, gmail_dirty: true, updated_at: iso(),
-          approval_email_status: args.p_send_email && r.reply_address ? 'due' : 'not_needed'
+          needs_attention: false, attention_note: '', gmail_dirty: true, updated_at: iso(),
+          approval_email_status: args.p_send_email && r.reply_address ? 'due' : 'not_needed',
+          auto_reply_status: r.auto_reply_status === 'wait_ai' ? 'not_needed' : r.auto_reply_status
         });
         return id;
       }

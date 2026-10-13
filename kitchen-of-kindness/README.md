@@ -207,7 +207,8 @@ How it runs:
      e.g. from `openssl rand -hex 32`
 
    For **Preview** and **Development**, set `MAIL_DRY_RUN=1` instead, so test
-   deployments never send email. Then redeploy.
+   deployments never send email, never change Gmail, and Yes / No there change
+   nothing. Then redeploy.
 5. **Delete `NEXT_PUBLIC_ADMIN_PASSWORD`** from Vercel and redeploy. From then on
    the admin pages use the new password.
 6. **Supabase SQL editor.** Store the cron secret (the same value as

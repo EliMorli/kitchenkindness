@@ -36,6 +36,15 @@ function must(value, what) {
 export function createGmail({ user, pass }) {
   let client = null;
   let allMailPath = '[Gmail]/All Mail';
+  let allMailHidden = false;
+  // Labels and the Sent Mail check work in All Mail; Gmail lets users hide it
+  // from IMAP (Settings > Labels > Show in IMAP).
+  const needAllMail = () => {
+    if (!allMailHidden) return;
+    const err = new Error('All Mail is hidden from IMAP');
+    err.code = 'AllMailHidden';
+    throw err;
+  };
   const search = async (query, what) => must(await client.search(query, { uid: true }), what);
 
   const gmail = {
@@ -54,7 +63,8 @@ export function createGmail({ user, pass }) {
       client.on('error', () => {}); // a dropped socket must not crash the function
       await client.connect();
       const list = await client.list();
-      const all = list.find(m => m.specialUse === '\\All');
+      const all = list.find(m => m.specialUse === '\\All') || list.find(m => m.path === '[Gmail]/All Mail');
+      allMailHidden = !all;
       if (all) allMailPath = all.path;
     },
 
@@ -113,6 +123,7 @@ export function createGmail({ user, pass }) {
     // change: { add: [labels], remove: [labels], seen: bool }. Labels may
     // include '\\Inbox'. Returns { found }.
     async setThreadState(threadId, { add = [], remove = [], seen = false }) {
+      needAllMail();
       const lock = await client.getMailboxLock(allMailPath);
       try {
         const uids = await search({ threadId }, 'search');
@@ -131,6 +142,7 @@ export function createGmail({ user, pass }) {
     async sentHasMessageId(messageId) {
       const id = String(messageId || '').replace(/[<>\s]/g, '');
       if (!id) return false;
+      needAllMail();
       const lock = await client.getMailboxLock(allMailPath, { readOnly: true });
       try {
         const uids = await client.search({ gmraw: `rfc822msgid:${id}` }, { uid: true });
@@ -146,6 +158,9 @@ export function createGmail({ user, pass }) {
 // A short, personal-data-free description of an IMAP failure.
 export function describeImapError(err) {
   if (!err) return '';
+  if (err.code === 'AllMailHidden') {
+    return 'Gmail’s “All Mail” folder is hidden from IMAP. In Gmail: Settings → Labels → All Mail → tick “Show in IMAP”.';
+  }
   if (err.authenticationFailed || /AUTHENTICATIONFAILED|Invalid credentials/i.test(String(err.responseText || err.message))) {
     return 'Gmail login failed. Check GMAIL_USER and the app password.';
   }

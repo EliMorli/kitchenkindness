@@ -6,11 +6,16 @@
 //   resend    { which: 'auto_reply' | 'approval_email' }  (failed / unknown only)
 //   save_geo  { geo: { address, formatted_address, lat, lng, status } }
 //   handled                          -> clears "needs attention"
+//   summarize                        -> Claude reads the conversation again
 // Gmail labels and emails follow on the next sync.
+//
+// Shadow mode and a dry-run server (MAIL_DRY_RUN, e.g. a developer's copy
+// on the real database) only practise decisions: nothing is changed.
 
 import { adminStore, json, jsonError, publicRequest } from '../../../../../lib/mail/api';
 import { UNDECIDED } from '../../../../../lib/mail/store';
 import { validateFamilyPayload } from '../../../../../lib/mail/fields';
+import { mailConfig } from '../../../../../lib/mail/runtime';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,19 +51,27 @@ export async function POST(request, { params }) {
   }
   const now = new Date().toISOString();
   const done = updated => (updated ? json({ ok: true, request: publicRequest(updated) }) : conflict());
-  // Shadow (practice) mode: decisions are tried out but nothing is changed.
+  // Practice (shadow mode or a dry-run server): decisions are tried out but
+  // nothing is changed.
   const settings = await store.getSettings();
   const shadow = settings?.mode === 'shadow';
-  const DECISIONS = ['approve', 'decline', 'reopen', 'reclassify', 'handled'];
+  const dryRun = mailConfig().dryRun;
+  const practice = shadow || dryRun ? { ok: true, shadow, dryRun: dryRun && !shadow } : null;
+  const DECISIONS = ['approve', 'decline', 'reopen', 'reclassify', 'handled', 'resend'];
+  // A "requests only" auto-reply still waiting for the summary is settled by
+  // the admin's decision.
+  const settleWaitAi = async (status, error) => {
+    await store.updateRequest(id, { auto_reply_status: status, auto_reply_error: error }, { eq: { auto_reply_status: 'wait_ai' } });
+  };
 
-  if (shadow && DECISIONS.includes(body.action) && body.action !== 'approve') return json({ ok: true, shadow: true });
+  if (practice && DECISIONS.includes(body.action) && body.action !== 'approve') return json(practice);
 
   switch (body.action) {
     case 'approve': {
       const names = [r.from_name, r.ai_fields?.requester_name].filter(Boolean);
       const v = validateFamilyPayload(body.family || {}, { names });
       if (!v.ok) return json({ error: 'invalid', errors: v.errors }, 400);
-      if (shadow) return json({ ok: true, shadow: true, family: v.family });
+      if (practice) return json({ ...practice, family: v.family });
       // A family number clash (someone added a family by hand at the same
       // moment) is retried; a second tap on the same request returns the
       // same family.
@@ -75,14 +88,18 @@ export async function POST(request, { params }) {
         }
       }
     }
-    case 'decline':
-      return done(
-        await store.updateRequest(
-          id,
-          { status: 'declined', kind: r.kind === 'unknown' ? 'request' : r.kind, kind_set_by: 'admin', decided_at: now, needs_attention: false, gmail_dirty: true },
-          { in: { status: UNDECIDED } }
-        )
+    case 'decline': {
+      const updated = await store.updateRequest(
+        id,
+        {
+          status: 'declined', kind: r.kind === 'unknown' ? 'request' : r.kind, kind_set_by: 'admin', decided_at: now,
+          needs_attention: false, attention_note: '', gmail_dirty: true
+        },
+        { in: { status: UNDECIDED } }
       );
+      if (updated) await settleWaitAi('not_needed', 'Declined');
+      return done(updated);
+    }
     case 'reopen':
       return done(
         await store.updateRequest(
@@ -93,15 +110,15 @@ export async function POST(request, { params }) {
       );
     case 'reclassify': {
       const toRequest = body.kind === 'request';
-      return done(
-        await store.updateRequest(
-          id,
-          toRequest
-            ? { kind: 'request', kind_set_by: 'admin', status: 'pending', gmail_dirty: true }
-            : { kind: 'other', kind_set_by: 'admin', status: 'other', gmail_dirty: true },
-          { in: { status: UNDECIDED } }
-        )
+      const updated = await store.updateRequest(
+        id,
+        toRequest
+          ? { kind: 'request', kind_set_by: 'admin', status: 'pending', gmail_dirty: true }
+          : { kind: 'other', kind_set_by: 'admin', status: 'other', gmail_dirty: true },
+        { in: { status: UNDECIDED } }
       );
+      if (updated) await settleWaitAi(toRequest ? 'due' : 'not_needed', toRequest ? '' : 'Not a request');
+      return done(updated);
     }
     case 'resend': {
       const prefix = body.which === 'approval_email' ? 'approval_email' : 'auto_reply';
@@ -135,7 +152,16 @@ export async function POST(request, { params }) {
       return done(await store.updateRequest(id, { geo }));
     }
     case 'handled':
-      return done(await store.updateRequest(id, { needs_attention: false, gmail_dirty: true }));
+      return done(await store.updateRequest(id, { needs_attention: false, attention_note: '', gmail_dirty: true }));
+    case 'summarize':
+      // Costs one Claude call; only for requests not decided yet.
+      return done(
+        await store.updateRequest(
+          id,
+          { ai_status: 'due', ai_attempts: 0, ai_error: '', needs_attention: false, attention_note: '', gmail_dirty: true },
+          { in: { status: UNDECIDED } }
+        )
+      );
     default:
       return jsonError(400, 'bad_action', 'Unknown action.');
   }

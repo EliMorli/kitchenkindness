@@ -24,6 +24,9 @@ export const LIMITS = {
   firstRunDays: 7,
   replyCooldownDays: 7,
   staleClaimMinutes: 10,
+  claimCheckHours: 24, // Sent Mail can't be checked this long -> "unclear", admin can resend
+  autoReplyMaxHours: 48, // no "we'll get back to you" after this
+  unthreadedAfterMinutes: 15, // reply without threading if the email still isn't saved
   runDeadlineMs: 45_000,
   lockSeconds: 75
 };

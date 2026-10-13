@@ -145,7 +145,7 @@ export default function AdminPage() {
         const res = await fetch('/api/mail/requests?view=counts', { credentials: 'same-origin', cache: 'no-store' });
         if (!res.ok) return;
         const { counts } = await res.json();
-        setMailCount((counts?.pending || 0) + (counts?.attention || 0));
+        setMailCount(counts?.badge || 0);
       } catch {
         // no badge
       }
@@ -2755,7 +2755,7 @@ export default function AdminPage() {
             families={families}
             googleReady={googleReady && !googleFailed}
             onFamiliesChanged={loadFamilies}
-            onCounts={c => setMailCount((c?.pending || 0) + (c?.attention || 0))}
+            onCounts={c => setMailCount(c?.badge || 0)}
           />
         )}
       </div>

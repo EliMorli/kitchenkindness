@@ -50,45 +50,103 @@ export function automatedReason(parsed, selfEmail = '') {
   return '';
 }
 
+// An Authentication-Results value as clauses of tokens (RFC 8601). Comments
+// (nested, with escapes) are dropped; a quoted string stays inside its token,
+// so a quoted address can't add a property or a ';'. Returns null when the
+// value is malformed (an unclosed quote or comment).
+export function parseAuthResults(value) {
+  const s = String(value || '');
+  const clauses = [[]];
+  let tok = '';
+  let depth = 0;
+  let inQuote = false;
+  const push = () => {
+    if (tok) clauses[clauses.length - 1].push(tok);
+    tok = '';
+  };
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (inQuote) {
+      if (ch === '\\') tok += s[++i] ?? '';
+      else if (ch === '"') inQuote = false;
+      else tok += ch;
+    } else if (depth > 0) {
+      if (ch === '\\') i += 1;
+      else if (ch === '(') depth += 1;
+      else if (ch === ')') depth -= 1;
+    } else if (ch === '"') inQuote = true;
+    else if (ch === '(') {
+      push();
+      depth = 1;
+    } else if (ch === ';') {
+      push();
+      clauses.push([]);
+    } else if (/\s/.test(ch)) {
+      // "key = value" is one token.
+      const next = s.slice(i).search(/\S/);
+      if (tok.endsWith('=') || (next >= 0 && s[i + next] === '=')) continue;
+      push();
+    } else tok += ch;
+  }
+  if (inQuote || depth > 0) return null;
+  push();
+  return clauses.filter(c => c.length);
+}
+
+// The domain part of a property value: after the last '@' (a quoted local
+// part can contain '@' too), or the whole value.
+const valueDomain = v => {
+  const t = String(v || '').toLowerCase();
+  return t.slice(t.lastIndexOf('@') + 1).replace(/\.$/, '');
+};
+
 // Gmail stamps its own Authentication-Results on top; a sender can't fake
-// that one. The sender counts as verified only if a check PASSED for the
-// From address's own domain (DMARC, or DKIM/SPF aligned with it). Text inside
-// comments or addresses can't fake a pass: only each clause's leading
-// "method=result" token is read.
+// that one. Only the top header counts, and only if Gmail wrote it. The
+// sender counts as verified only if a check PASSED for the From address's own
+// domain (DMARC, or DKIM/SPF aligned with it).
 export function authPass(parsed) {
-  const google = headerValues(parsed, 'authentication-results').find(v => /^mx\.google\.com\s*;/i.test(v));
-  if (!google) return false;
+  const top = headerValues(parsed, 'authentication-results')[0];
+  const clauses = top ? parseAuthResults(top) : null;
+  if (!clauses || clauses[0]?.[0]?.toLowerCase() !== 'mx.google.com') return false;
   const fromDomain = domainOf(firstAddress(parsed?.from).email);
   if (!fromDomain) return false;
-  const clauses = google
-    .replace(/\([^()]*\)/g, ' ')
-    .split(';')
-    .slice(1)
-    .map(c => c.trim())
-    .filter(Boolean);
-  for (const clause of clauses) {
-    const m = /^([a-z]+)\s*=\s*([a-z]+)\b(.*)$/i.exec(clause);
+  for (const [head, ...rest] of clauses.slice(1)) {
+    const m = /^([a-z0-9-]+)=([a-z]+)$/i.exec(head);
     if (!m || m[2].toLowerCase() !== 'pass') continue;
     const method = m[1].toLowerCase();
     const props = {};
-    for (const p of m[3].matchAll(/\b([a-z]+(?:\.[a-z]+)?)\s*=\s*("?)([^\s";]+)\2/gi)) props[p[1].toLowerCase()] = p[3].toLowerCase();
-    if (method === 'dmarc' && aligned(props['header.from'], fromDomain)) return true;
-    if (method === 'dkim') {
-      const d = props['header.d'] || domainOf(props['header.i']) || String(props['header.i'] || '').replace(/^@/, '');
-      if (aligned(d, fromDomain)) return true;
+    let repeated = false;
+    for (const t of rest) {
+      const p = /^([a-z0-9-]+\.[a-z0-9-]+)=(.*)$/is.exec(t);
+      if (!p) continue;
+      const key = p[1].toLowerCase();
+      if (key in props) repeated = true;
+      props[key] = p[2];
     }
-    if (method === 'spf' && aligned(domainOf(props['smtp.mailfrom']) || props['smtp.mailfrom'], fromDomain)) return true;
+    if (repeated) continue; // ambiguous: don't trust it
+    if (method === 'dmarc' && aligned(valueDomain(props['header.from']), fromDomain)) return true;
+    if (method === 'dkim' && aligned(valueDomain(props['header.d'] || props['header.i']), fromDomain)) return true;
+    if (method === 'spf' && aligned(valueDomain(props['smtp.mailfrom']), fromDomain)) return true;
   }
   return false;
 }
 
-// Where replies go: the verified From address. A Reply-To is used only when
-// it is in the sender's own domain, so a stranger can't make the kitchen's
-// Gmail email a third party.
+// Where the approval email goes: the verified From address, or a Reply-To in
+// the sender's own organisation's domain (the card shows it to the admin).
+// Automatic replies always go to the From address only.
+// At a shared mail provider "same domain" means nothing (anyone can have a
+// gmail.com address), so there the Reply-To is ignored.
+const SHARED_MAIL_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'yahoo.com', 'ymail.com',
+  'icloud.com', 'me.com', 'mac.com', 'aol.com', 'proton.me', 'protonmail.com', 'gmx.com', 'gmx.net', 'mail.com',
+  'zoho.com', 'yandex.com', 'comcast.net', 'att.net', 'sbcglobal.net', 'verizon.net', 'charter.net', 'cox.net'
+]);
+
 export function replyRecipient(parsed) {
   const from = firstAddress(parsed?.from).email;
   const replyTo = firstAddress(parsed?.replyTo).email;
-  if (replyTo && aligned(domainOf(replyTo), domainOf(from))) return replyTo;
+  const domain = domainOf(from);
+  if (replyTo && !SHARED_MAIL_DOMAINS.has(domain) && aligned(domainOf(replyTo), domain)) return replyTo;
   return from;
 }
 
@@ -155,18 +213,24 @@ export function cleanBody(text) {
 }
 
 // "a@x.org, b@y.com" or one per line -> Set of lower-case addresses/domains.
+// Each address is also kept in its sender-key form (no +tag, no Gmail dots),
+// so it matches however that person writes it.
 export function parseNoReplyList(text) {
-  return new Set(
-    String(text || '')
-      .split(/[\s,;]+/)
-      .map(s => s.trim().toLowerCase())
-      .filter(Boolean)
-  );
+  const out = new Set();
+  for (const s of String(text || '').split(/[\s,;]+/)) {
+    const entry = s.trim().toLowerCase();
+    if (!entry) continue;
+    out.add(entry);
+    if (entry.indexOf('@') > 0) out.add(replyKey(entry));
+  }
+  return out;
 }
 
 export function onNoReplyList(email, list) {
-  const e = String(email || '').toLowerCase();
+  const e = String(email || '').trim().toLowerCase();
   if (!e) return false;
-  const domain = e.split('@')[1] || '';
-  return list.has(e) || list.has(domain) || list.has(`@${domain}`);
+  return [e, replyKey(e)].some(a => {
+    const domain = a.split('@')[1] || '';
+    return list.has(a) || list.has(domain) || list.has(`@${domain}`);
+  });
 }

@@ -47,6 +47,8 @@ export function publicRequest(r, messages = null) {
     last_message_at: r.last_message_at,
     message_count: r.message_count,
     needs_attention: r.needs_attention,
+    attention_note: r.attention_note || '',
+    related_request_id: r.related_request_id ?? null,
     ai_status: r.ai_status,
     ai_summary: r.ai_summary,
     ai_fields: r.ai_fields || {},
