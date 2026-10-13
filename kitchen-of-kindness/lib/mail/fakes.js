@@ -9,19 +9,32 @@ import { DAYS } from './config.js';
 
 const CRLF = '\r\n';
 
+// verified: true = Gmail says SPF passed for the sender's own domain;
+// false = no pass; or a custom Authentication-Results value (string).
+// html: send an HTML-only body inside multipart/mixed with an attachment.
 export function buildEml({
   from, to = 'kitchen@example.org', subject, date = new Date(), messageId, inReplyTo, references,
-  body, verified = true, headers = {}
+  body, verified = true, headers = {}, replyTo, html = false, rawSubject
 }) {
   const lines = [];
-  if (verified) {
-    lines.push(`Authentication-Results: mx.google.com; dkim=pass header.i=@example.com; spf=pass smtp.mailfrom=${from.match(/<([^>]+)>/)?.[1] || from}`);
-  }
-  lines.push(`From: ${from}`, `To: ${to}`, `Subject: ${subject}`, `Date: ${new Date(date).toUTCString()}`, `Message-ID: ${messageId}`);
+  const fromAddr = from.match(/<([^>]+)>/)?.[1] || from;
+  if (verified === true) lines.push(`Authentication-Results: mx.google.com; spf=pass (google.com: domain of ${fromAddr} designates 1.2.3.4 as permitted sender) smtp.mailfrom=${fromAddr}`);
+  else if (typeof verified === 'string') lines.push(`Authentication-Results: ${verified}`);
+  lines.push(`From: ${from}`, `To: ${to}`, `Subject: ${rawSubject ?? subject}`, `Date: ${new Date(date).toUTCString()}`, `Message-ID: ${messageId}`);
+  if (replyTo) lines.push(`Reply-To: ${replyTo}`);
   if (inReplyTo) lines.push(`In-Reply-To: ${inReplyTo}`);
   if (references) lines.push(`References: ${references}`);
   for (const [k, v] of Object.entries(headers)) lines.push(`${k}: ${v}`);
-  lines.push('MIME-Version: 1.0', 'Content-Type: text/plain; charset=utf-8', 'Content-Transfer-Encoding: 8bit', '', body);
+  if (html) {
+    lines.push(
+      'MIME-Version: 1.0', 'Content-Type: multipart/mixed; boundary="b1"', '', '--b1',
+      'Content-Type: text/html; charset=utf-8', '', `<html><body><p>${body}</p></body></html>`, '--b1',
+      'Content-Type: image/jpeg; name="photo.jpg"', 'Content-Disposition: attachment; filename="photo.jpg"',
+      'Content-Transfer-Encoding: base64', '', '/9j/4AAQSkZJRg==', '--b1--', ''
+    );
+  } else {
+    lines.push('MIME-Version: 1.0', 'Content-Type: text/plain; charset=utf-8', 'Content-Transfer-Encoding: quoted-printable', '', body);
+  }
   return Buffer.from(lines.join(CRLF), 'utf8');
 }
 
@@ -119,9 +132,10 @@ export function createFakeGmail({ emails = SAMPLE_EMAILS, now = () => new Date()
       const date = new Date(now().getTime() - (e.minutesAgo || 0) * 60_000);
       const messageId = e.messageId || `<fake-${uid}-${e.thread || 'x'}@mail.example.com>`;
       const parent = e.replyTo !== undefined ? inbox.find(m => m.thread === e.thread) : null;
+      const inReplyTo = e.inReplyTo || parent?.messageId;
       const source = buildEml({
-        from: e.from, subject: e.subject, date, messageId, body: e.body, verified: e.verified !== false,
-        headers: e.headers || {}, inReplyTo: parent?.messageId, references: parent?.messageId
+        from: e.from, subject: e.subject, date, messageId, body: e.body, verified: e.verified ?? true,
+        headers: e.headers || {}, inReplyTo, references: inReplyTo, replyTo: e.replyTo, html: e.html, rawSubject: e.rawSubject
       });
       inbox.push({ uid, emailId: String(9000000000000000000n + BigInt(uid)), threadId: tid, thread: e.thread, internalDate: date, source, messageId });
       if (!labels.has(tid)) labels.set(tid, new Set());
@@ -192,7 +206,8 @@ export function createFakeSmtp(gmail, { fail = null } = {}) {
 
 export function createFakeAi(emails = SAMPLE_EMAILS, { fail = null } = {}) {
   const canned = new Map(emails.filter(e => e.ai).map(e => [e.subject, e.ai]));
-  const ai = async messages => {
+  const ai = async (messages, opts = {}) => {
+    ai.lastOpts = opts;
     if (ai.fail) throw ai.fail;
     ai.calls += 1;
     const first = messages[0];

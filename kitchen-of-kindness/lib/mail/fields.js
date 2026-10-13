@@ -3,6 +3,7 @@
 // on the kitchen view, so names must never end up in them.
 
 import { DAYS } from './config.js';
+import { dbText } from './text.js';
 
 const OTHER_TOPICS = [
   'none', 'volunteering', 'donation', 'question', 'thanks', 'update_existing',
@@ -11,7 +12,7 @@ const OTHER_TOPICS = [
 const MISSING = ['address', 'phone', 'people_count'];
 const FLAGS = ['instructions_to_ai', 'multiple_households', 'unclear', 'outside_area', 'name_removed'];
 
-const str = (v, max) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
+const str = (v, max) => dbText(dbText(v).replace(/\s+/g, ' ').trim(), max);
 const pick = (list, allowed) => [...new Set((Array.isArray(list) ? list : []).filter(x => allowed.includes(x)))];
 
 const NAME_STOPWORDS = new Set([

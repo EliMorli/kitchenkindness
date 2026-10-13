@@ -46,14 +46,19 @@ export async function POST(request, { params }) {
   }
   const now = new Date().toISOString();
   const done = updated => (updated ? json({ ok: true, request: publicRequest(updated) }) : conflict());
+  // Shadow (practice) mode: decisions are tried out but nothing is changed.
+  const settings = await store.getSettings();
+  const shadow = settings?.mode === 'shadow';
+  const DECISIONS = ['approve', 'decline', 'reopen', 'reclassify', 'handled'];
+
+  if (shadow && DECISIONS.includes(body.action) && body.action !== 'approve') return json({ ok: true, shadow: true });
 
   switch (body.action) {
     case 'approve': {
       const names = [r.from_name, r.ai_fields?.requester_name].filter(Boolean);
       const v = validateFamilyPayload(body.family || {}, { names });
       if (!v.ok) return json({ error: 'invalid', errors: v.errors }, 400);
-      const settings = await store.getSettings();
-      if (settings?.mode === 'shadow') return json({ ok: true, shadow: true, family: v.family });
+      if (shadow) return json({ ok: true, shadow: true, family: v.family });
       // A family number clash (someone added a family by hand at the same
       // moment) is retried; a second tap on the same request returns the
       // same family.
@@ -74,20 +79,26 @@ export async function POST(request, { params }) {
       return done(
         await store.updateRequest(
           id,
-          { status: 'declined', kind: r.kind === 'unknown' ? 'request' : r.kind, decided_at: now, needs_attention: false, gmail_dirty: true },
+          { status: 'declined', kind: r.kind === 'unknown' ? 'request' : r.kind, kind_set_by: 'admin', decided_at: now, needs_attention: false, gmail_dirty: true },
           { in: { status: UNDECIDED } }
         )
       );
     case 'reopen':
       return done(
-        await store.updateRequest(id, { status: 'pending', kind: 'request', decided_at: null, gmail_dirty: true }, { eq: { status: 'declined' } })
+        await store.updateRequest(
+          id,
+          { status: 'pending', kind: 'request', kind_set_by: 'admin', decided_at: null, gmail_dirty: true },
+          { eq: { status: 'declined' } }
+        )
       );
     case 'reclassify': {
       const toRequest = body.kind === 'request';
       return done(
         await store.updateRequest(
           id,
-          toRequest ? { kind: 'request', status: 'pending', gmail_dirty: true } : { kind: 'other', status: 'other', gmail_dirty: true },
+          toRequest
+            ? { kind: 'request', kind_set_by: 'admin', status: 'pending', gmail_dirty: true }
+            : { kind: 'other', kind_set_by: 'admin', status: 'other', gmail_dirty: true },
           { in: { status: UNDECIDED } }
         )
       );
@@ -98,7 +109,12 @@ export async function POST(request, { params }) {
       return done(
         await store.updateRequest(
           id,
-          { [`${prefix}_status`]: 'due', [`${prefix}_attempts`]: 0, [`${prefix}_error`]: '' },
+          {
+            [`${prefix}_status`]: 'due',
+            [`${prefix}_attempts`]: 0,
+            [`${prefix}_error`]: '',
+            ...(prefix === 'auto_reply' ? { auto_reply_forced: true } : {})
+          },
           { in: { [`${prefix}_status`]: ['failed', 'unknown'] } }
         )
       );

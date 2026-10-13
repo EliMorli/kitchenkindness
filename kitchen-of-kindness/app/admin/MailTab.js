@@ -10,7 +10,7 @@ import { loginAdmin, logoutAdminServer, serverSession } from '../../lib/adminLog
 import { DAYS } from '../../lib/mail/config';
 import { familyDraft, validateFamilyPayload } from '../../lib/mail/fields';
 import { findPossibleDuplicates } from '../../lib/mail/dupes';
-import { geocodeUS, geocoderAvailable } from '../../lib/geocode';
+import { geocodeLookup, geocoderAvailable } from '../../lib/geocode';
 import { isPickup } from '../../lib/groups';
 
 const VIEWS = [
@@ -64,22 +64,27 @@ const typingIn = el =>
   !!el && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName));
 
 export default function MailTab({ families = [], onFamiliesChanged, googleReady = false, onCounts }) {
-  const [session, setSession] = useState('checking'); // checking | login | ready | not_configured
+  // checking | login | ready | not_configured | error
+  const [session, setSession] = useState('checking');
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [view, setView] = useState('pending');
-  const [items, setItems] = useState([]);
+  // The list is kept with the view it belongs to, so a view never shows (or
+  // acts on) another view's requests while it loads.
+  const [list, setList] = useState({ view: null, items: [] });
   const [counts, setCounts] = useState({});
   const [sync, setSync] = useState(null);
-  const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [banner, setBanner] = useState('');
+  const [syncError, setSyncError] = useState('');
   const [focusId, setFocusId] = useState(null);
   const [drafts, setDrafts] = useState({});
   const [cardErrors, setCardErrors] = useState({});
   const [geo, setGeo] = useState({});
+  const [editingAddress, setEditingAddress] = useState(null);
   const [queue, setQueue] = useState([]);
   const [hidden, setHidden] = useState(() => new Set());
+  const [justApproved, setJustApproved] = useState([]);
   const [toast, setToast] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showEmail, setShowEmail] = useState({});
@@ -87,6 +92,8 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
   const entries = useRef(new Map());
   const idleTimer = useRef(null);
   const toastTimer = useRef(null);
+  const geoRef = useRef(geo);
+  geoRef.current = geo;
   const viewRef = useRef(view);
   viewRef.current = view;
   // The parent passes new callback functions on every render; keep the latest
@@ -96,50 +103,65 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
   const onFamiliesChangedRef = useRef(onFamiliesChanged);
   onFamiliesChangedRef.current = onFamiliesChanged;
 
-  const showToast = useCallback((text, kind = 'ok', undoKey = null) => {
+  const items = list.view === view ? list.items : [];
+  const loading = list.view !== view;
+
+  const showToast = useCallback((text, kind = 'ok') => {
     clearTimeout(toastTimer.current);
-    setToast({ text, kind, undoKey });
-    toastTimer.current = setTimeout(() => setToast(null), undoKey ? UNDO_MS + 300 : 4000);
+    setToast({ text, kind });
+    toastTimer.current = setTimeout(() => setToast(null), 4000);
+  }, []);
+
+  const checkSession = useCallback(async () => {
+    setSession('checking');
+    const s = await serverSession();
+    if (s.error) setSession('error');
+    else if (!s.configured) setSession('not_configured');
+    else setSession(s.authenticated ? 'ready' : 'login');
   }, []);
 
   // ---------- loading ----------
-  const load = useCallback(
-    async (v = viewRef.current) => {
-      const r = await api(`/api/mail/requests?view=${v}`);
-      setLoading(false);
-      if (r.status === 401) {
-        setSession('login');
-        return;
-      }
-      if (!r.ok) {
-        setBanner(r.data?.message || 'Could not load the mail.');
-        return;
-      }
-      if (v !== viewRef.current) return;
-      setBanner('');
-      const ids = new Set(r.data.items.map(it => it.id));
-      const waiting = new Set([...entries.current.values()].map(e => e.id));
-      setHidden(h => new Set([...h].filter(id => waiting.has(id) || ids.has(id))));
-      setItems(r.data.items);
-      setCounts(r.data.counts);
-      setSync(r.data.sync);
-      onCountsRef.current?.(r.data.counts);
-    },
-    []
-  );
+  const load = useCallback(async (v = viewRef.current) => {
+    const r = await api(`/api/mail/requests?view=${v}`);
+    if (r.status === 401) {
+      setSession('login');
+      return;
+    }
+    if (v !== viewRef.current) return; // a newer view was picked meanwhile
+    if (!r.ok) {
+      setBanner(r.data?.message || 'Could not load the mail.');
+      setList(l => (l.view === v ? l : { view: v, items: [] }));
+      return;
+    }
+    setBanner('');
+    const ids = new Set(r.data.items.map(it => it.id));
+    const waiting = new Set([...entries.current.values()].map(e => e.id));
+    setHidden(h => new Set([...h].filter(id => waiting.has(id) || ids.has(id))));
+    setList({ view: v, items: r.data.items });
+    setCounts(r.data.counts);
+    setSync(r.data.sync);
+    onCountsRef.current?.(r.data.counts);
+  }, []);
 
   const runSync = useCallback(
     async quiet => {
       setSyncing(true);
       const r = await api('/api/mail/sync', { method: 'POST' });
       setSyncing(false);
+      if (r.status === 401) {
+        setSession('login');
+        return r;
+      }
       if (!quiet) {
-        if (!r.ok) setBanner(r.data?.message || 'The mail check failed.');
-        else if (r.data?.locked) showToast('Already checking mail. Try again in a moment.', 'info');
-        else if (r.data?.skipped === 'off') showToast('Mail checking is off. Turn it on in Settings.', 'info');
+        if (!r.ok) setSyncError(r.data?.message || 'The mail check failed.');
         else {
-          const n = r.data?.read || 0;
-          showToast(n ? `${n} new email${n === 1 ? '' : 's'}` : 'No new email', 'ok');
+          setSyncError('');
+          if (r.data?.locked) showToast('Already checking mail. Try again in a moment.', 'info');
+          else if (r.data?.skipped === 'off') showToast('Mail checking is off. Turn it on in Settings.', 'info');
+          else {
+            const n = r.data?.read || 0;
+            showToast(n ? `${n} new email${n === 1 ? '' : 's'}` : 'No new email', 'ok');
+          }
         }
       }
       await load();
@@ -149,17 +171,11 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
   );
 
   useEffect(() => {
-    (async () => {
-      const s = await serverSession();
-      if (!s.configured) setSession('not_configured');
-      else setSession(s.authenticated ? 'ready' : 'login');
-    })();
-  }, []);
+    checkSession();
+  }, [checkSession]);
 
   useEffect(() => {
-    if (session !== 'ready') return;
-    setLoading(true);
-    load(view);
+    if (session === 'ready') load(view);
   }, [session, view, load]);
 
   // Check Gmail once when the tab opens.
@@ -202,37 +218,43 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
   );
 
   useEffect(() => {
-    if (view !== 'pending') return;
+    if (view !== 'pending' || loading) return;
     if (!visible.some(it => it.id === focusId)) setFocusId(visible[0]?.id ?? null);
-  }, [visible, focusId, view]);
+  }, [visible, focusId, view, loading]);
 
   // ---------- map check ----------
-  const lookup = useCallback(
-    async (id, address) => {
-      const text = String(address || '').trim();
-      if (!text || isPickup({ address: text }) || !geocoderAvailable()) return;
-      setGeo(g => ({ ...g, [id]: { address: text, status: 'looking' } }));
-      const top = await geocodeUS(text);
-      const result = top
+  const lookup = useCallback(async (id, address) => {
+    const text = String(address || '').trim();
+    if (!text || isPickup({ address: text }) || !geocoderAvailable()) return;
+    setGeo(g => ({ ...g, [id]: { address: text, status: 'looking' } }));
+    const top = await geocodeLookup(text);
+    const result = top?.error
+      ? { address: text, status: 'error' }
+      : top
         ? { address: text, status: 'found', formatted_address: top.formatted_address, lat: top.lat, lng: top.lng }
         : { address: text, status: 'not_found' };
-      setGeo(g => (g[id]?.address === text ? { ...g, [id]: result } : g));
+    // Only the answer for the address still in the box counts.
+    if (geoRef.current[id]?.address !== text) return;
+    setGeo(g => (g[id]?.address === text ? { ...g, [id]: result } : g));
+    // A failed lookup isn't saved: it's tried again next time.
+    if (result.status !== 'error') {
       api(`/api/mail/requests/${id}`, { method: 'POST', body: JSON.stringify({ action: 'save_geo', geo: result }) });
-    },
-    []
-  );
+    }
+  }, []);
 
-  // Look up the focused card and the next two before they are needed.
+  // Look up the focused card and the next two before they're needed, except
+  // an address being typed (that one is checked when the field is left).
   useEffect(() => {
-    if (view !== 'pending' || !googleReady) return;
+    if (view !== 'pending' || !googleReady || loading) return;
     const start = visible.findIndex(it => it.id === focusId);
     if (start < 0) return;
     for (const it of visible.slice(start, start + 3)) {
+      if (it.id === editingAddress) continue;
       const d = drafts[it.id];
       const g = geo[it.id];
       if (d?.address?.trim() && (!g || g.address !== d.address.trim())) lookup(it.id, d.address);
     }
-  }, [focusId, visible, drafts, geo, googleReady, view, lookup]);
+  }, [focusId, visible, drafts, geo, googleReady, view, loading, lookup, editingAddress]);
 
   // ---------- decisions (5 s undo) ----------
   const scheduleIdleSync = useCallback(() => {
@@ -243,6 +265,13 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
       onFamiliesChangedRef.current?.();
     }, IDLE_SYNC_MS);
   }, [runSync]);
+
+  const unhide = id =>
+    setHidden(h => {
+      const n = new Set(h);
+      n.delete(id);
+      return n;
+    });
 
   const commit = useCallback(
     async entry => {
@@ -255,23 +284,32 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
           : { action: 'decline' };
       const r = await api(`/api/mail/requests/${entry.id}`, { method: 'POST', body: JSON.stringify(body) });
       if (!r.ok) {
-        setHidden(h => {
-          const n = new Set(h);
-          n.delete(entry.id);
-          return n;
-        });
+        unhide(entry.id);
+        if (r.status === 401) {
+          setCardErrors(e => ({ ...e, [entry.id]: ['Not saved: Mail was locked. Log in and decide again.'] }));
+          setSession('login');
+          return;
+        }
         setCardErrors(e => ({ ...e, [entry.id]: r.data?.errors || [r.data?.message || 'Could not save. Try again.'] }));
         showToast(`Couldn’t ${entry.kind === 'approve' ? 'add the family' : 'decline'}. The request is back in the list.`, 'warn');
         return;
       }
-      if (r.data?.shadow) showToast('Shadow mode: nothing was added (this is a practice run).', 'info');
-      else if (entry.kind === 'approve' && r.data?.family_id) {
+      if (r.data?.shadow) {
+        // Practice run: nothing changed on the server, so the card comes back.
+        unhide(entry.id);
+        showToast('Shadow mode: nothing was changed (this is a practice run).', 'info');
+        return;
+      }
+      if (entry.kind === 'approve' && r.data?.family_id) {
         showToast(`Family #${r.data.family_id} added${entry.sendEmail ? ' · approval email goes out shortly' : ''}`, 'ok');
+        // Until the families list reloads, count this family for duplicate checks.
+        setJustApproved(list => [...list, { ...entry.family, family_id: r.data.family_id, active: true }]);
+        onFamiliesChangedRef.current?.();
       }
       setCounts(c => {
         const next = { ...c, pending: Math.max(0, (c.pending || 0) - 1) };
         const key = entry.kind === 'approve' ? 'approved' : 'declined';
-        next[key] = (c[key] || 0) + (r.data?.shadow ? 0 : 1);
+        next[key] = (c[key] || 0) + 1;
         return next;
       });
       scheduleIdleSync();
@@ -279,10 +317,20 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
     [scheduleIdleSync, showToast]
   );
 
+  // Send everything still waiting now (used before locking Mail).
+  const flushQueue = useCallback(async () => {
+    const waiting = [...entries.current.values()];
+    for (const entry of waiting) {
+      clearTimeout(timers.current.get(entry.key));
+      await commit(entry);
+    }
+  }, [commit]);
+
   const enqueue = useCallback(
     (item, kind, extra = {}) => {
       const key = `${item.id}-${Date.now()}`;
-      const entry = { key, id: item.id, kind, ...extra };
+      const who = item.from_name || item.from_email;
+      const entry = { key, id: item.id, kind, who, ...extra };
       entries.current.set(key, entry);
       setQueue(q => [...q, entry]);
       setHidden(h => new Set(h).add(item.id));
@@ -290,10 +338,8 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
       const nextItem = visible[idx + 1] || visible[idx - 1] || null;
       setFocusId(nextItem ? nextItem.id : null);
       timers.current.set(key, setTimeout(() => commit(entry), UNDO_MS));
-      const who = item.from_name || item.from_email;
-      showToast(kind === 'approve' ? `Adding ${who}…` : `Declined ${who}`, 'ok', key);
     },
-    [visible, commit, showToast]
+    [visible, commit]
   );
 
   const undo = useCallback(key => {
@@ -303,14 +349,13 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
     timers.current.delete(key);
     entries.current.delete(key);
     setQueue(q => q.filter(x => x.key !== key));
-    setHidden(h => {
-      const n = new Set(h);
-      n.delete(entry.id);
-      return n;
-    });
+    unhide(entry.id);
     setFocusId(entry.id);
-    setToast(null);
   }, []);
+
+  const undoAll = useCallback(() => {
+    for (const key of [...entries.current.keys()]) undo(key);
+  }, [undo]);
 
   // Leaving the tab: send whatever is still waiting rather than dropping it.
   useEffect(
@@ -340,8 +385,16 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
     (item, sendEmail = true) => {
       const d = drafts[item.id];
       if (!d) return;
+      const addr = d.address.trim();
       const g = geo[item.id];
-      const onMap = g?.status === 'found' && g.address === d.address.trim();
+      const needsMap = addr && !isPickup({ address: addr }) && geocoderAvailable();
+      if (needsMap && (!g || g.address !== addr || g.status === 'looking')) {
+        if (!g || g.address !== addr) lookup(item.id, addr);
+        setCardErrors(e => ({ ...e, [item.id]: ['Still checking the address on the map. Try again in a moment.'] }));
+        setFocusId(item.id);
+        return;
+      }
+      const onMap = g?.status === 'found' && g.address === addr;
       const family = {
         ...d,
         people_count: Number(d.people_count),
@@ -357,7 +410,7 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
       setCardErrors(e => ({ ...e, [item.id]: null }));
       enqueue(item, 'approve', { family: v.family, sendEmail });
     },
-    [drafts, geo, enqueue]
+    [drafts, geo, enqueue, lookup]
   );
 
   const decline = useCallback(item => enqueue(item, 'decline'), [enqueue]);
@@ -365,7 +418,12 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
   // Immediate actions (no undo needed).
   const act = async (item, body, okText) => {
     const r = await api(`/api/mail/requests/${item.id}`, { method: 'POST', body: JSON.stringify(body) });
+    if (r.status === 401) {
+      setSession('login');
+      return;
+    }
     if (!r.ok) showToast(r.data?.message || 'Could not save. Try again.', 'warn');
+    else if (r.data?.shadow) showToast('Shadow mode: nothing was changed (this is a practice run).', 'info');
     else if (okText) showToast(okText, 'ok');
     load();
     scheduleIdleSync();
@@ -373,12 +431,17 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
 
   // ---------- keyboard ----------
   useEffect(() => {
-    if (session !== 'ready' || view !== 'pending') return undefined;
+    if (session !== 'ready' || view !== 'pending' || loading) return undefined;
     const onKey = e => {
       if (typingIn(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
       const idx = visible.findIndex(it => it.id === focusId);
       const item = visible[idx];
       const key = e.key.toLowerCase();
+      // Holding Y or N must not decide a whole run of requests.
+      if ((key === 'y' || key === 'n') && e.repeat) {
+        e.preventDefault();
+        return;
+      }
       if (key === 'j' || e.key === 'ArrowDown') {
         if (visible[idx + 1]) setFocusId(visible[idx + 1].id);
       } else if (key === 'k' || e.key === 'ArrowUp') {
@@ -387,18 +450,41 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
         approve(item, !e.shiftKey);
       } else if (key === 'n' && item) {
         decline(item);
+      } else if (key === 'u' && queue.length) {
+        undo(queue[queue.length - 1].key);
       } else return;
       e.preventDefault();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [session, view, visible, focusId, approve, decline]);
+  }, [session, view, loading, visible, focusId, approve, decline, undo, queue]);
 
   const editDraft = (id, patch) =>
     setDrafts(d => ({ ...d, [id]: { ...d[id], ...patch, edited: true } }));
 
+  // Families for duplicate checks: the list plus families just approved here
+  // or still waiting in the undo queue.
+  const dupeFamilies = useMemo(() => {
+    const known = new Set(families.map(f => f.family_id));
+    const waiting = queue
+      .filter(e => e.kind === 'approve')
+      .map(e => ({ ...e.family, family_id: 'new', active: true }));
+    return [...families, ...justApproved.filter(f => !known.has(f.family_id)), ...waiting];
+  }, [families, justApproved, queue]);
+
   // ---------- render ----------
   if (session === 'checking') return <div className="mail-empty">Loading mail…</div>;
+  if (session === 'error') {
+    return (
+      <div className="mail-setup">
+        <h3>Couldn’t reach the server</h3>
+        <p>Check the internet connection, then try again.</p>
+        <button type="button" className="mail-btn primary" onClick={checkSession}>
+          Try again
+        </button>
+      </div>
+    );
+  }
   if (session === 'not_configured') {
     return (
       <div className="mail-setup">
@@ -442,8 +528,11 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
   if (sync?.mode === 'shadow') {
     notices.push(['info', 'Shadow mode: reading and summarizing only. Nothing is sent, Gmail isn’t changed, and Yes doesn’t add families.']);
   }
+  if (sync?.dry_run) notices.push(['info', 'Dry run: emails are read and summarized here, but nothing is sent and Gmail isn’t changed.']);
   if (sync?.last_sync_error) notices.push(['error', sync.last_sync_error]);
+  if (syncError) notices.push(['error', syncError]);
   if (banner) notices.push(['error', banner]);
+  const newest = queue[queue.length - 1];
 
   return (
     <section className="mail-tab">
@@ -456,10 +545,7 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
               role="tab"
               aria-selected={view === v.key}
               className={`mail-chip ${view === v.key ? 'active' : ''} ${v.key === 'attention' && counts.attention ? 'alert' : ''}`}
-              onClick={() => {
-                setLoading(true);
-                setView(v.key);
-              }}
+              onClick={() => setView(v.key)}
             >
               {v.label}
               <span className="mail-chip-count">{counts[v.key] ?? 0}</span>
@@ -479,6 +565,7 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
             className="mail-btn"
             title="Lock Mail on this device"
             onClick={async () => {
+              await flushQueue(); // save decisions still in their 5 seconds
               await logoutAdminServer();
               setSession('login');
             }}
@@ -492,7 +579,18 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
         <div key={i} className={`mail-notice ${kind}`}>{text}</div>
       ))}
 
-      {settingsOpen && <MailSettings onSaved={s => setSync(s)} showToast={showToast} />}
+      {settingsOpen && (
+        <MailSettings
+          onSaved={s => {
+            setSync(s);
+            // A mode change can bring practised requests back: show the real list.
+            const waiting = new Set([...entries.current.values()].map(e => e.id));
+            setHidden(h => new Set([...h].filter(id => waiting.has(id))));
+            load();
+          }}
+          showToast={showToast}
+        />
+      )}
 
       {loading ? (
         <div className="mail-empty">Loading…</div>
@@ -505,7 +603,8 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
         ) : (
           <>
             <p className="mail-keys">
-              {visible.length} waiting · keys: <kbd>Y</kbd> yes · <kbd>N</kbd> no · <kbd>J</kbd>/<kbd>K</kbd> next/previous
+              {visible.length} waiting · keys: <kbd>Y</kbd> yes · <kbd>N</kbd> no · <kbd>J</kbd>/<kbd>K</kbd> next/previous ·{' '}
+              <kbd>U</kbd> undo
             </p>
             <div className="mail-list">
               {visible.map(item => (
@@ -516,14 +615,23 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
                   draft={drafts[item.id]}
                   geo={geo[item.id]}
                   errors={cardErrors[item.id]}
-                  families={families}
+                  families={dupeFamilies}
                   showEmail={!!showEmail[item.id]}
                   onToggleEmail={() => setShowEmail(s => ({ ...s, [item.id]: !s[item.id] }))}
                   onFocus={() => setFocusId(item.id)}
                   onEdit={patch => editDraft(item.id, patch)}
+                  onAddressFocus={() => setEditingAddress(item.id)}
                   onAddressBlur={() => {
+                    setEditingAddress(null);
                     const d = drafts[item.id];
                     if (d?.address?.trim() && geo[item.id]?.address !== d.address.trim()) lookup(item.id, d.address);
+                  }}
+                  onRetryMap={() => lookup(item.id, drafts[item.id]?.address)}
+                  onUseMapAddress={() => {
+                    const g = geo[item.id];
+                    if (g?.status !== 'found') return;
+                    editDraft(item.id, { address: g.formatted_address });
+                    setGeo(all => ({ ...all, [item.id]: { ...g, address: g.formatted_address } }));
                   }}
                   onApprove={sendEmail => approve(item, sendEmail)}
                   onDecline={() => decline(item)}
@@ -538,13 +646,28 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
         <SimpleList view={view} items={visible} act={act} showEmail={showEmail} setShowEmail={setShowEmail} />
       )}
 
-      {toast && (
-        <div className={`mail-toast ${toast.kind}`} role="status">
-          <span>{toast.text}</span>
-          {toast.undoKey && entries.current.has(toast.undoKey) && (
-            <button type="button" onClick={() => undo(toast.undoKey)}>
-              Undo
-            </button>
+      {(newest || toast) && (
+        <div className="mail-float" aria-live="polite">
+          {newest && (
+            <div className="mail-toast undo" role="status">
+              <span>
+                {newest.kind === 'approve' ? `Adding ${newest.who}…` : `Declining ${newest.who}…`}
+                {queue.length > 1 && ` (+${queue.length - 1} more)`}
+              </span>
+              <button type="button" onClick={() => undo(newest.key)}>
+                Undo
+              </button>
+              {queue.length > 1 && (
+                <button type="button" onClick={undoAll}>
+                  Undo all
+                </button>
+              )}
+            </div>
+          )}
+          {toast && (
+            <div className={`mail-toast ${toast.kind}`} role="status">
+              <span>{toast.text}</span>
+            </div>
           )}
         </div>
       )}
@@ -588,8 +711,8 @@ function EmailThread({ item }) {
 }
 
 function RequestCard({
-  item, focused, draft, geo, errors, families, showEmail, onToggleEmail, onFocus, onEdit, onAddressBlur,
-  onApprove, onDecline, onNotRequest, onResend
+  item, focused, draft, geo, errors, families, showEmail, onToggleEmail, onFocus, onEdit, onAddressFocus, onAddressBlur,
+  onRetryMap, onUseMapAddress, onApprove, onDecline, onNotRequest, onResend
 }) {
   const f = item.ai_fields || {};
   const dupes = useMemo(
@@ -651,6 +774,9 @@ function RequestCard({
         <div>
           <strong>{item.from_name || item.from_email}</strong>
           <span className="mail-from">{item.from_email}</span>
+          {item.reply_address && item.reply_address !== item.from_email && (
+            <span className="mail-from">· replies go to {item.reply_address}</span>
+          )}
         </div>
         <span className="mail-when">
           {timeAgo(item.last_message_at)}
@@ -667,6 +793,7 @@ function RequestCard({
           <input
             value={d.address}
             onChange={e => onEdit({ address: e.target.value })}
+            onFocus={onAddressFocus}
             onBlur={onAddressBlur}
             placeholder="Street, city"
           />
@@ -677,15 +804,19 @@ function RequestCard({
                 ? geocoderAvailable() ? 'Checking the map when you leave this field…' : 'Map check unavailable here.'
                 : geo.status === 'looking'
                   ? 'Checking the map…'
-                  : onMap
-                    ? <>📍 On the map: {geo.formatted_address}{' '}
-                        {geo.formatted_address !== d.address.trim() && (
-                          <button type="button" className="mail-inline-btn" onClick={() => onEdit({ address: geo.formatted_address })}>
-                            Use this
-                          </button>
-                        )}
+                  : geo.status === 'error'
+                    ? <>Couldn’t check the map right now.{' '}
+                        <button type="button" className="mail-inline-btn" onClick={onRetryMap}>Try again</button>
                       </>
-                    : 'Not found on the map. It will be added without a delivery group; check the address.'}
+                    : onMap
+                      ? <>📍 On the map: {geo.formatted_address}{' '}
+                          {geo.formatted_address !== d.address.trim() && (
+                            <button type="button" className="mail-inline-btn" onClick={onUseMapAddress}>
+                              Use this
+                            </button>
+                          )}
+                        </>
+                      : 'Not found on the map. It will be added without a delivery group; check the address.'}
           </small>
         </label>
         <label className="mail-field small">

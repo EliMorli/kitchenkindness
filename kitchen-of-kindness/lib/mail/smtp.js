@@ -49,11 +49,14 @@ export function createSmtp({ user, pass, dryRun = false }) {
 }
 
 // 'definite': the email certainly did not go out (safe to retry).
-// 'unclear': it may have gone out (never retried automatically).
+// 'unclear': it may have gone out. The sync then checks Sent Mail before
+// trying again, so nobody gets the same email twice.
 export function classifySmtpError(err) {
   if (!err) return 'unclear';
   if (err.responseCode) return 'definite'; // the server answered with a rejection
-  if (['EAUTH', 'ECONNECTION', 'EDNS', 'EENVELOPE', 'EMESSAGE', 'ETLS', 'EOAUTH2'].includes(err.code)) return 'definite';
+  if (['EAUTH', 'EDNS', 'EENVELOPE', 'EMESSAGE', 'ETLS', 'EOAUTH2'].includes(err.code)) return 'definite';
+  // A connection that closed before anything was sent.
+  if (err.code === 'ECONNECTION' && err.command === 'API') return 'definite';
   return 'unclear';
 }
 

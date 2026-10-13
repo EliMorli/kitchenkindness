@@ -20,13 +20,28 @@ test('automated mail is recognized, people are not', async () => {
   assert.equal(automatedReason(await parse({ from: 'Ana <ana@example.com>', headers: { Precedence: 'bulk' } })), 'bulk');
 });
 
-test('only Gmail-verified senders count as verified', async () => {
+test('only senders Gmail verified for their own domain count', async () => {
   assert.equal(authPass(await parse({ from: 'Ana <ana@example.com>' })), true);
   assert.equal(authPass(await parse({ from: 'Ana <ana@example.com>', verified: false })), false);
-  const forged = await parse({
-    from: 'Ana <ana@example.com>', verified: false, headers: { 'Authentication-Results': 'evil.example; dkim=pass' }
-  });
-  assert.equal(authPass(forged), false);
+  // Someone else's header, not Gmail's.
+  assert.equal(authPass(await parse({ from: 'Ana <ana@example.com>', verified: 'evil.example; dkim=pass header.d=example.com' })), false);
+  // A pass for a different domain than the From address.
+  assert.equal(authPass(await parse({ from: 'Ana <ana@victim.example>', verified: 'mx.google.com; dkim=pass header.i=@attacker.example; spf=pass smtp.mailfrom=x@attacker.example' })), false);
+  // "spf=pass" text inside a failed result.
+  assert.equal(authPass(await parse({ from: 'Ana <ana@victim.example>', verified: 'mx.google.com; spf=fail (domain of spf=pass@victim.example) smtp.mailfrom=spf=pass@victim.example' })), false);
+  // DMARC and aligned DKIM.
+  assert.equal(authPass(await parse({ from: 'Ana <ana@clinic.example>', verified: 'mx.google.com; dkim=pass header.i=@mail.clinic.example; dmarc=pass (p=NONE) header.from=clinic.example' })), true);
+});
+
+test('reply address and sender key', async () => {
+  const { replyRecipient, replyKey, dbText, bodyText } = await import('./filters.js');
+  assert.equal(replyRecipient(await parse({ from: 'B <b@attacker.example>', replyTo: 'victim@gmail.com' })), 'b@attacker.example');
+  assert.equal(replyRecipient(await parse({ from: 'S <s@clinic.example>', replyTo: 'intake@clinic.example' })), 'intake@clinic.example');
+  assert.equal(replyKey('J.Doe+kitchen@GoogleMail.com'), 'jdoe@gmail.com');
+  assert.equal(replyKey('a.b+x@clinic.org'), 'a.b@clinic.org');
+  assert.equal(dbText('a\u0000b\uD83D', 10), 'ab\uFFFD');
+  assert.equal(dbText('😀😀😀', 2), '😀😀');
+  assert.match(bodyText(await parse({ from: 'H <h@example.com>', body: 'Hi there', html: true })), /Hi there/);
 });
 
 test('cleanBody drops quoted replies and caps length', () => {
@@ -48,7 +63,7 @@ test('templates and threading', () => {
   assert.equal(render('Hi {name}, #{family_id} {unknown}', { name: 'Rosa', family_id: 412 }), 'Hi Rosa, #412 {unknown}');
   assert.equal(replySubject('Meals please'), 'Re: Meals please');
   assert.equal(replySubject('RE: Meals'), 'RE: Meals');
-  assert.equal(replySubject(''), 'Re: Your message to Kitchen of Kindness');
+  assert.equal(replySubject(''), 'Re:');
   assert.deepEqual(threadHeaders({ message_id_header: '<b@x>', references_header: '<a@x>' }), {
     inReplyTo: '<b@x>', references: '<a@x> <b@x>'
   });
@@ -57,6 +72,7 @@ test('templates and threading', () => {
   assert.equal(firstName('"Dana Weiss, LCSW"'), 'Dana');
   assert.equal(firstName(''), 'there');
   assert.equal(firstName('12345'), 'there');
+  assert.equal(firstName('Www.evil-site.com Bob'), 'there');
   assert.equal(formatDays(['Monday', 'Thursday', 'Wednesday']), 'Monday, Wednesday and Thursday');
   assert.equal(formatDays(['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday']), 'Sunday through Thursday');
   assert.match(gmailThreadUrl('1814000000000007919', 'k@x.org'), /#all\/[0-9a-f]+$/);

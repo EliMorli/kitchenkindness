@@ -15,10 +15,12 @@ CREATE TABLE IF NOT EXISTS public.mail_requests (
   id bigserial PRIMARY KEY,
   gmail_thrid text NOT NULL UNIQUE,
   kind text NOT NULL DEFAULT 'unknown' CHECK (kind IN ('unknown', 'request', 'other')),
+  kind_set_by text NOT NULL DEFAULT 'ai' CHECK (kind_set_by IN ('ai', 'admin')),
   status text NOT NULL DEFAULT 'new' CHECK (status IN ('new', 'pending', 'approved', 'declined', 'other')),
   from_name text NOT NULL DEFAULT '',
   from_email text NOT NULL DEFAULT '',
   reply_address text NOT NULL DEFAULT '',
+  reply_key text NOT NULL DEFAULT '',
   subject text NOT NULL DEFAULT '',
   first_message_at timestamptz NOT NULL DEFAULT now(),
   last_message_at timestamptz NOT NULL DEFAULT now(),
@@ -35,6 +37,7 @@ CREATE TABLE IF NOT EXISTS public.mail_requests (
   auto_reply_status text NOT NULL DEFAULT 'not_needed'
     CHECK (auto_reply_status IN ('not_needed', 'wait_ai', 'due', 'claimed', 'sent', 'failed', 'unknown', 'skipped')),
   auto_reply_attempts integer NOT NULL DEFAULT 0,
+  auto_reply_forced boolean NOT NULL DEFAULT false,
   auto_reply_claimed_at timestamptz,
   auto_reply_message_id text NOT NULL DEFAULT '',
   auto_replied_at timestamptz,
@@ -58,7 +61,7 @@ CREATE TABLE IF NOT EXISTS public.mail_requests (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS mail_requests_status_idx ON public.mail_requests (status, last_message_at DESC);
-CREATE INDEX IF NOT EXISTS mail_requests_reply_address_idx ON public.mail_requests (reply_address);
+CREATE INDEX IF NOT EXISTS mail_requests_reply_key_idx ON public.mail_requests (reply_key);
 CREATE INDEX IF NOT EXISTS mail_requests_dirty_idx ON public.mail_requests (gmail_dirty) WHERE gmail_dirty;
 
 -- One row per Gmail message seen in the inbox (dedupe, bodies, threading headers).
@@ -84,6 +87,7 @@ CREATE TABLE IF NOT EXISTS public.mail_messages (
 );
 CREATE INDEX IF NOT EXISTS mail_messages_thread_idx ON public.mail_messages (gmail_thrid, received_at);
 CREATE INDEX IF NOT EXISTS mail_messages_request_idx ON public.mail_messages (request_id);
+CREATE INDEX IF NOT EXISTS mail_messages_message_id_idx ON public.mail_messages (message_id_header);
 
 -- Single settings row: mode, templates, sync cursor and lock.
 CREATE TABLE IF NOT EXISTS public.mail_settings (
@@ -97,6 +101,8 @@ CREATE TABLE IF NOT EXISTS public.mail_settings (
   no_reply_senders text NOT NULL DEFAULT '',
   inbox_uidvalidity text,
   inbox_last_uid bigint,
+  inbox_fail_uid bigint,
+  inbox_fail_count integer NOT NULL DEFAULT 0,
   labels_ready boolean NOT NULL DEFAULT false,
   sync_lock_holder text,
   sync_lock_until timestamptz,
@@ -159,14 +165,27 @@ BEGIN
       (p_family->>''latitude'')::float8,
       (p_family->>''longitude'')::float8);
   UPDATE public.mail_requests
-     SET status = ''approved'', kind = ''request'', family_id = v_id, approved_family = p_family,
+     SET status = ''approved'', kind = ''request'', kind_set_by = ''admin'', family_id = v_id, approved_family = p_family,
          decided_at = now(), needs_attention = false, gmail_dirty = true,
          approval_email_status = CASE WHEN p_send_email AND r.reply_address <> '''' THEN ''due'' ELSE ''not_needed'' END
    WHERE id = p_request_id;
   RETURN v_id;
 END';
 
+-- Counts for the Mail tab in one row (a plain select is capped at 1000 rows).
+CREATE OR REPLACE FUNCTION public.mail_counts()
+RETURNS json LANGUAGE sql STABLE SET search_path = '' AS '
+  SELECT json_build_object(
+    ''pending'', count(*) FILTER (WHERE status IN (''new'', ''pending'')),
+    ''approved'', count(*) FILTER (WHERE status = ''approved''),
+    ''declined'', count(*) FILTER (WHERE status = ''declined''),
+    ''other'', count(*) FILTER (WHERE status = ''other''),
+    ''attention'', count(*) FILTER (WHERE needs_attention))
+  FROM public.mail_requests';
+
 REVOKE ALL ON FUNCTION public.mail_try_lock(text, integer) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.mail_counts() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.mail_counts() TO service_role;
 REVOKE ALL ON FUNCTION public.mail_approve_request(bigint, jsonb, boolean) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.mail_touch() FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.mail_try_lock(text, integer) TO service_role;

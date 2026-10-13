@@ -6,9 +6,11 @@ export function render(template, vars) {
   return String(template || '').replace(/\{(\w+)\}/g, (m, key) => (key in vars ? String(vars[key] ?? '') : m));
 }
 
+// "Re: <their subject>" so Gmail keeps the reply in the same conversation
+// (Gmail also matches on subject). An empty subject stays empty: "Re:".
 export function replySubject(subject) {
-  const s = String(subject || '').trim();
-  if (!s) return 'Re: Your message to Kitchen of Kindness';
+  const s = String(subject || '').replace(/\s+/g, ' ').trim();
+  if (!s) return 'Re:';
   return /^re:/i.test(s) ? s : `Re: ${s}`;
 }
 
@@ -30,7 +32,8 @@ export function firstName(name) {
     .replace(/@.*/, '')
     .trim();
   const first = clean.split(/[\s,]+/)[0] || '';
-  if (!/^[\p{L}][\p{L}'.-]{0,30}$/u.test(first)) return 'there';
+  // Plain letters only (no dots), so a "name" can't look like a link.
+  if (!/^[\p{L}][\p{L}'-]{0,30}$/u.test(first)) return 'there';
   return first.charAt(0).toUpperCase() + first.slice(1);
 }
 

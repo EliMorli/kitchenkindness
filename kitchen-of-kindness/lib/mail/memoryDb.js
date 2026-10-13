@@ -3,9 +3,9 @@
 
 const DEFAULTS = {
   mail_requests: () => ({
-    kind: 'unknown', status: 'new', from_name: '', from_email: '', reply_address: '', subject: '',
+    kind: 'unknown', kind_set_by: 'ai', status: 'new', from_name: '', from_email: '', reply_address: '', reply_key: '', subject: '',
     message_count: 1, needs_attention: false, ai_status: 'due', ai_attempts: 0, ai_summary: '', ai_fields: {},
-    ai_model: '', ai_error: '', ai_at: null, geo: null, auto_reply_status: 'not_needed', auto_reply_attempts: 0,
+    ai_model: '', ai_error: '', ai_at: null, geo: null, auto_reply_status: 'not_needed', auto_reply_attempts: 0, auto_reply_forced: false,
     auto_reply_claimed_at: null, auto_reply_message_id: '', auto_replied_at: null, auto_reply_error: '',
     family_id: null, approved_family: null, decided_at: null, approval_email_status: 'not_needed',
     approval_email_attempts: 0, approval_email_claimed_at: null, approval_email_message_id: '',
@@ -19,7 +19,8 @@ const DEFAULTS = {
   }),
   mail_settings: () => ({
     mode: 'off', auto_reply_enabled: true, auto_reply_scope: 'all', auto_reply_since: null, auto_reply_body: '',
-    approval_body: '', no_reply_senders: '', inbox_uidvalidity: null, inbox_last_uid: null, labels_ready: false,
+    approval_body: '', no_reply_senders: '', inbox_uidvalidity: null, inbox_last_uid: null, inbox_fail_uid: null,
+    inbox_fail_count: 0, labels_ready: false,
     sync_lock_holder: null, sync_lock_until: null, last_sync_at: null, last_sync_ok_at: null, last_sync_error: ''
   })
 };
@@ -27,6 +28,18 @@ const DEFAULTS = {
 const UNIQUE = { mail_requests: 'gmail_thrid', mail_messages: 'gmail_msgid', mail_settings: 'id' };
 
 const clone = v => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
+
+// Postgres (through PostgREST) rejects NUL and lone surrogates in text; do the
+// same here so tests catch it.
+function checkText(value) {
+  const json = JSON.stringify(value);
+  if (/\\u0000|\\ud[89ab][0-9a-f]{2}(?!\\ud[c-f])|(?<!\\ud[89ab][0-9a-f]{2})\\ud[c-f][0-9a-f]{2}/i.test(json)) {
+    const e = new Error('unsupported Unicode escape sequence');
+    e.code = '22P05';
+    throw e;
+  }
+}
+const MAX_ROWS = 1000; // Supabase's default cap per response
 
 function matches(row, f = {}) {
   for (const [k, v] of Object.entries(f.eq || {})) {
@@ -53,10 +66,11 @@ export function createMemoryDb({ now = () => new Date(), settings = {}, familySt
         const [col, asc] = f.order;
         rows = [...rows].sort((a, b) => (a[col] < b[col] ? -1 : a[col] > b[col] ? 1 : 0) * (asc === false ? -1 : 1));
       }
-      if (f.limit) rows = rows.slice(0, f.limit);
+      rows = rows.slice(0, Math.min(f.limit || MAX_ROWS, MAX_ROWS));
       return clone(rows);
     },
     async insert(table, row, { onConflictIgnore } = {}) {
+      checkText(row);
       const key = UNIQUE[table];
       if (key && row[key] != null && tables[table].some(r => r[key] === row[key])) {
         if (onConflictIgnore) return [];
@@ -80,6 +94,7 @@ export function createMemoryDb({ now = () => new Date(), settings = {}, familySt
       return [clone(full)];
     },
     async update(table, patch, f = {}) {
+      checkText(patch);
       const out = [];
       for (const r of tables[table]) {
         if (!matches(r, f)) continue;
@@ -90,6 +105,15 @@ export function createMemoryDb({ now = () => new Date(), settings = {}, familySt
       return out;
     },
     async rpc(name, args) {
+      if (name === 'mail_counts') {
+        const c = { pending: 0, approved: 0, declined: 0, other: 0, attention: 0 };
+        for (const r of tables.mail_requests) {
+          if (r.status === 'new' || r.status === 'pending') c.pending += 1;
+          else if (c[r.status] !== undefined) c[r.status] += 1;
+          if (r.needs_attention) c.attention += 1;
+        }
+        return c;
+      }
       if (name === 'mail_try_lock') {
         const s = tables.mail_settings[0];
         if (s.sync_lock_until && s.sync_lock_until >= iso()) return false;
@@ -108,7 +132,7 @@ export function createMemoryDb({ now = () => new Date(), settings = {}, familySt
         const id = Math.max(familyStart - 1, ...tables.families.map(x => x.family_id)) + 1;
         tables.families.push({ id: ++seq.families, family_id: id, active: true, ...clone(fam) });
         Object.assign(r, {
-          status: 'approved', kind: 'request', family_id: id, approved_family: clone(fam), decided_at: iso(),
+          status: 'approved', kind: 'request', kind_set_by: 'admin', family_id: id, approved_family: clone(fam), decided_at: iso(),
           needs_attention: false, gmail_dirty: true, updated_at: iso(),
           approval_email_status: args.p_send_email && r.reply_address ? 'due' : 'not_needed'
         });

@@ -28,23 +28,45 @@ export function createStore(db) {
     },
     insertMessage: row => db.insert('mail_messages', row, { onConflictIgnore: 'gmail_msgid' }).then(one),
     messagesFor: requestId => db.select('mail_messages', { eq: { request_id: requestId }, order: ['received_at', true] }),
-    messagesForMany: ids =>
-      ids.length ? db.select('mail_messages', { in: { request_id: ids }, order: ['received_at', true] }) : Promise.resolve([]),
+    // In small batches: one Supabase response is capped at 1000 rows.
+    async messagesForMany(ids) {
+      const out = [];
+      for (let i = 0; i < ids.length; i += 10) {
+        const part = ids.slice(i, i + 10);
+        out.push(...(await db.select('mail_messages', { in: { request_id: part }, order: ['received_at', true], limit: 1000 })));
+      }
+      return out;
+    },
+    // A reply that Gmail filed as a new conversation (e.g. a changed
+    // subject): find the request whose emails it answers.
+    async requestForReplyIds(ids) {
+      const wanted = [...new Set((ids || []).filter(Boolean))].slice(0, 30);
+      if (!wanted.length) return null;
+      const msgs = await db.select('mail_messages', { in: { message_id_header: wanted }, columns: 'request_id', limit: 5 });
+      const known = msgs.find(m => m.request_id);
+      if (known) return store.getRequest(known.request_id);
+      for (const col of ['auto_reply_message_id', 'approval_email_message_id']) {
+        const r = one(await db.select('mail_requests', { in: { [col]: wanted }, limit: 1 }));
+        if (r) return r;
+      }
+      return null;
+    },
 
     // Conditional update: `where` adds equality / in-list conditions.
     updateRequest: (id, patch, where = {}) =>
       db.update('mail_requests', patch, { eq: { id, ...(where.eq || {}) }, in: where.in }).then(one),
 
-    // Has this address had an auto-reply (or a claimed one) since `since`?
-    async repliedRecently(address, since) {
-      if (!address) return false;
+    // Has this sender (reply_key) had an auto-reply (or a claimed one) since
+    // `since`, on another request?
+    async repliedRecently(key, since, exceptId = null) {
+      if (!key) return false;
       const rows = await db.select('mail_requests', {
-        eq: { reply_address: address },
+        eq: { reply_key: key },
         gte: { auto_reply_claimed_at: since },
         columns: 'id',
-        limit: 1
+        limit: 3
       });
-      return rows.length > 0;
+      return rows.some(r => r.id !== exceptId);
     },
 
     listByField: (field, value, { limit = 20, order = 'first_message_at' } = {}) =>
@@ -64,14 +86,8 @@ export function createStore(db) {
       return db.select('mail_requests', f);
     },
     async counts() {
-      const rows = await db.select('mail_requests', { columns: 'status,needs_attention' });
-      const c = { pending: 0, approved: 0, declined: 0, other: 0, attention: 0 };
-      for (const r of rows) {
-        if (r.status === 'new' || r.status === 'pending') c.pending += 1;
-        else if (c[r.status] !== undefined) c[r.status] += 1;
-        if (r.needs_attention) c.attention += 1;
-      }
-      return c;
+      const c = await db.rpc('mail_counts', {});
+      return { pending: 0, approved: 0, declined: 0, other: 0, attention: 0, ...(c || {}) };
     },
     approve: (id, family, sendEmail) =>
       db.rpc('mail_approve_request', { p_request_id: id, p_family: family, p_send_email: !!sendEmail })

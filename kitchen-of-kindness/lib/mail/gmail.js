@@ -21,9 +21,22 @@ export function planUidRead({ storedValidity, storedLastUid, validity, uidNext }
   return { mode: 'range', cursor, range: `${cursor + 1}:*` };
 }
 
+// imapflow returns false (not an error) when a SEARCH or STORE fails (a
+// Gmail "NO", throttling, or a dropped connection). Treat that as a failure,
+// never as "no messages" or "done".
+function must(value, what) {
+  if (value === false || value === undefined || value === null) {
+    const err = new Error(`IMAP ${what} failed`);
+    err.code = 'ImapCommandFailed';
+    throw err;
+  }
+  return value;
+}
+
 export function createGmail({ user, pass }) {
   let client = null;
   let allMailPath = '[Gmail]/All Mail';
+  const search = async (query, what) => must(await client.search(query, { uid: true }), what);
 
   const gmail = {
     async connect() {
@@ -63,10 +76,8 @@ export function createGmail({ user, pass }) {
         const validity = String(mb.uidValidity);
         const plan = planUidRead({ storedValidity, storedLastUid, validity, uidNext: mb.uidNext });
         let uids = [];
-        if (plan.mode === 'since') uids = (await client.search({ since }, { uid: true })) || [];
-        else if (plan.mode === 'range') {
-          uids = ((await client.search({ uid: plan.range }, { uid: true })) || []).filter(u => u > plan.cursor);
-        }
+        if (plan.mode === 'since') uids = await search({ since }, 'search');
+        else if (plan.mode === 'range') uids = (await search({ uid: plan.range }, 'search')).filter(u => u > plan.cursor);
         uids.sort((a, b) => a - b);
         const batch = uids.slice(0, limit);
         const fetched = batch.length
@@ -104,25 +115,26 @@ export function createGmail({ user, pass }) {
     async setThreadState(threadId, { add = [], remove = [], seen = false }) {
       const lock = await client.getMailboxLock(allMailPath);
       try {
-        const uids = (await client.search({ threadId }, { uid: true })) || [];
+        const uids = await search({ threadId }, 'search');
         if (!uids.length) return { found: false };
-        if (add.length) await client.messageFlagsAdd(uids, add, { uid: true, useLabels: true });
-        if (remove.length) await client.messageFlagsRemove(uids, remove, { uid: true, useLabels: true });
-        if (seen) await client.messageFlagsAdd(uids, ['\\Seen'], { uid: true });
+        if (add.length) must(await client.messageFlagsAdd(uids, add, { uid: true, useLabels: true }), 'label');
+        if (remove.length) must(await client.messageFlagsRemove(uids, remove, { uid: true, useLabels: true }), 'label');
+        if (seen) must(await client.messageFlagsAdd(uids, ['\\Seen'], { uid: true }), 'flag');
         return { found: true };
       } finally {
         lock.release();
       }
     },
 
-    // Did a message with this Message-ID reach Sent Mail? (stuck-send check)
+    // Did a message with this Message-ID reach the mailbox (Sent Mail)?
+    // true / false, or null when Gmail couldn't be asked (check again later).
     async sentHasMessageId(messageId) {
       const id = String(messageId || '').replace(/[<>\s]/g, '');
       if (!id) return false;
       const lock = await client.getMailboxLock(allMailPath, { readOnly: true });
       try {
-        const uids = (await client.search({ gmraw: `rfc822msgid:${id}` }, { uid: true })) || [];
-        return uids.length > 0;
+        const uids = await client.search({ gmraw: `rfc822msgid:${id}` }, { uid: true });
+        return Array.isArray(uids) ? uids.length > 0 : null;
       } finally {
         lock.release();
       }
