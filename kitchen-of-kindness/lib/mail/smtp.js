@@ -1,4 +1,5 @@
-// Sending through Gmail's SMTP with the app password. Server only.
+// Sending through Gmail's SMTP, logged in with a "Sign in with Google" access
+// token (or an app password). Server only.
 // Gmail saves a copy of everything sent this way in "Sent Mail" by itself.
 // Dry run (MAIL_DRY_RUN=1) builds the email with nodemailer's jsonTransport
 // and sends nothing.
@@ -6,14 +7,14 @@
 import nodemailer from 'nodemailer';
 import { FROM_NAME } from './config.js';
 
-export function createSmtp({ user, pass, dryRun = false }) {
+export function createSmtp({ user, pass, accessToken, dryRun = false }) {
   const transport = dryRun
     ? nodemailer.createTransport({ jsonTransport: true })
     : nodemailer.createTransport({
         host: 'smtp.gmail.com',
         port: 465,
         secure: true,
-        auth: { user, pass: String(pass || '').replace(/\s+/g, '') },
+        auth: accessToken ? { type: 'OAuth2', user, accessToken } : { user, pass: String(pass || '').replace(/\s+/g, '') },
         pool: true,
         maxConnections: 1,
         connectionTimeout: 10_000,
@@ -62,7 +63,7 @@ export function classifySmtpError(err) {
 
 export function describeSmtpError(err) {
   if (!err) return '';
-  if (err.code === 'EAUTH') return 'Gmail refused the login for sending. Check the app password.';
+  if (err.code === 'EAUTH' || err.code === 'EOAUTH2') return 'Gmail refused the login for sending. Connect Gmail again in Mail → Settings.';
   if (err.responseCode) return `Gmail rejected the email (${err.responseCode}).`;
   return `Sending failed${err.code ? ` (${err.code})` : ''}.`;
 }

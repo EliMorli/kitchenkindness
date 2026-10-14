@@ -4,7 +4,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { requireAdmin, jsonError } from '../adminSession.js';
 import { gmailThreadUrl } from './templates.js';
-import { getMailStore, mailConfig } from './runtime.js';
+import { accountEmail, getMailStore, hasGmail, mailConfig } from './runtime.js';
 
 export const noStore = { 'Cache-Control': 'no-store' };
 export const json = (data, status = 200) =>
@@ -34,7 +34,8 @@ export function adminStore(request) {
 
 const MESSAGE_FIELDS = ['id', 'from_name', 'from_email', 'received_at', 'subject', 'body_text', 'attachment_count'];
 
-export function publicRequest(r, messages = null) {
+// user: the connected Gmail address, for the "Open in Gmail" link.
+export function publicRequest(r, messages = null, user = mailConfig().user) {
   const out = {
     id: r.id,
     status: r.status,
@@ -65,7 +66,7 @@ export function publicRequest(r, messages = null) {
     approval_email_error: r.approval_email_error,
     approval_email_sent_at: r.approval_email_sent_at,
     gmail_error: r.gmail_error,
-    gmail_url: gmailThreadUrl(r.gmail_thrid, mailConfig().user)
+    gmail_url: gmailThreadUrl(r.gmail_thrid, user)
   };
   if (messages) {
     out.messages = messages
@@ -82,8 +83,11 @@ export function syncStatus(settings) {
     last_sync_at: settings?.last_sync_at || null,
     last_sync_ok_at: settings?.last_sync_ok_at || null,
     last_sync_error: settings?.last_sync_error || '',
-    gmail_user: cfg.user,
-    has_gmail: cfg.hasGmail,
+    gmail_user: accountEmail(settings),
+    has_gmail: hasGmail(settings),
+    gmail_via: settings?.gmail_account ? 'google' : cfg.hasPassword ? 'password' : '',
+    gmail_auth_error: settings?.gmail_auth_error || '',
+    google_ready: cfg.hasGoogleClient,
     has_ai: cfg.hasAi,
     dry_run: cfg.dryRun,
     fake: cfg.fake

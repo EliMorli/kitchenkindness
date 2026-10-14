@@ -20,12 +20,12 @@ const DEFAULTS = {
   mail_settings: () => ({
     mode: 'off', auto_reply_enabled: true, auto_reply_scope: 'all', auto_reply_since: null, auto_reply_body: '',
     approval_body: '', no_reply_senders: '', inbox_uidvalidity: null, inbox_last_uid: null, inbox_fail_uid: null,
-    inbox_fail_count: 0, inbox_fail_since: null, labels_ready: false,
+    inbox_fail_count: 0, inbox_fail_since: null, labels_ready: false, gmail_account: '', gmail_auth_error: '',
     sync_lock_holder: null, sync_lock_until: null, last_sync_at: null, last_sync_ok_at: null, last_sync_error: ''
   })
 };
 
-const UNIQUE = { mail_requests: 'gmail_thrid', mail_messages: 'gmail_msgid', mail_settings: 'id' };
+const UNIQUE = { mail_requests: 'gmail_thrid', mail_messages: 'gmail_msgid', mail_settings: 'id', mail_google: 'id' };
 
 const clone = v => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
 
@@ -53,7 +53,7 @@ function matches(row, f = {}) {
 }
 
 export function createMemoryDb({ now = () => new Date(), settings = {}, familyStart = 9000 } = {}) {
-  const tables = { mail_requests: [], mail_messages: [], mail_settings: [], families: [] };
+  const tables = { mail_requests: [], mail_messages: [], mail_settings: [], mail_google: [], families: [] };
   const seq = { mail_requests: 0, mail_messages: 0, families: 0 };
   const iso = () => now().toISOString();
   tables.mail_settings.push({ id: 1, ...DEFAULTS.mail_settings(), ...settings, updated_at: iso() });

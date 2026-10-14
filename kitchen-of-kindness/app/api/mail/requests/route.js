@@ -2,6 +2,7 @@
 // attention) plus counts and the last sync status.
 
 import { adminStore, json, publicRequest, syncStatus } from '../../../../lib/mail/api';
+import { accountEmail } from '../../../../lib/mail/runtime';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -28,7 +29,7 @@ export async function GET(request) {
   }
   return json({
     view,
-    items: items.map(r => publicRequest(r, withBodies ? byRequest.get(r.id) || [] : null)),
+    items: items.map(r => publicRequest(r, withBodies ? byRequest.get(r.id) || [] : null, accountEmail(settings))),
     counts,
     sync: syncStatus(settings)
   });

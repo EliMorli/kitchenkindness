@@ -11,6 +11,12 @@ export function createStore(db) {
     db,
     getSettings: async () => one(await db.select('mail_settings', { eq: { id: 1 } })),
     updateSettings: patch => db.update('mail_settings', patch, { eq: { id: 1 } }).then(one),
+    // The Google account connected in Settings (single private row).
+    getGoogle: async () => one(await db.select('mail_google', { eq: { id: 1 } })),
+    async saveGoogle(row) {
+      const updated = await db.update('mail_google', row, { eq: { id: 1 } });
+      return updated[0] || one(await db.insert('mail_google', { id: 1, ...row }));
+    },
     tryLock: (holder, seconds) => db.rpc('mail_try_lock', { p_holder: holder, p_seconds: seconds }),
     releaseLock: holder =>
       db.update('mail_settings', { sync_lock_holder: null, sync_lock_until: null }, { eq: { id: 1, sync_lock_holder: holder } }),

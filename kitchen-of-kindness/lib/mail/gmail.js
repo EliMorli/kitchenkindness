@@ -33,7 +33,9 @@ function must(value, what) {
   return value;
 }
 
-export function createGmail({ user, pass }) {
+// Log in with an access token from "Sign in with Google" (XOAUTH2), or with
+// an app password.
+export function createGmail({ user, pass, accessToken }) {
   let client = null;
   let allMailPath = '[Gmail]/All Mail';
   let allMailHidden = false;
@@ -53,7 +55,7 @@ export function createGmail({ user, pass }) {
         host: 'imap.gmail.com',
         port: 993,
         secure: true,
-        auth: { user, pass: String(pass || '').replace(/\s+/g, '') },
+        auth: accessToken ? { user, accessToken } : { user, pass: String(pass || '').replace(/\s+/g, '') },
         logger: false,
         emitLogs: false,
         connectionTimeout: 15_000,
@@ -162,7 +164,7 @@ export function describeImapError(err) {
     return 'Gmail’s “All Mail” folder is hidden from IMAP. In Gmail: Settings → Labels → All Mail → tick “Show in IMAP”.';
   }
   if (err.authenticationFailed || /AUTHENTICATIONFAILED|Invalid credentials/i.test(String(err.responseText || err.message))) {
-    return 'Gmail login failed. Check GMAIL_USER and the app password.';
+    return 'Gmail refused the login. Connect Gmail again in Mail → Settings.';
   }
   if (/web login required|WEBALERT/i.test(String(err.responseText || err.message))) {
     return 'Google blocked the sign-in. Open Gmail in a browser, confirm it was you, then try again.';

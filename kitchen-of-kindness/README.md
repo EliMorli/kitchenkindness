@@ -189,34 +189,47 @@ How it runs:
 
 ### Turning it on
 
-1. **Gmail app password.** On the kitchen's Google account (Google Account →
-   Security), turn on **2-Step Verification**, then open **App passwords**,
-   create one called "Kitchen app" and copy the 16 letters.
+1. **Google sign-in (one time, about 10 minutes).** In Google Cloud Console, open
+   the project that has the Maps key → **Google Auth Platform**:
+   - **Branding**: app name "Kitchen of Kindness", your support email.
+   - **Audience**: user type **External**, then **Publish app** ("In
+     production"). Left in "Testing", Google ends the sign-in every 7 days.
+   - **Data access** → Add scope `https://mail.google.com/`.
+   - **Clients** → Create client → **Web application**. Authorized redirect URI:
+     `https://kitchenofkindness.app/api/mail/google/callback`. Copy the Client
+     ID and Client secret.
 2. **Claude API key.** At console.anthropic.com → API keys, create a key. Set a
    monthly spend limit under Billing; each email costs a few cents.
 3. **Supabase service role key.** In the Supabase dashboard → Project Settings →
    API, copy the `service_role` key (keep it secret).
 4. **Vercel → Settings → Environment Variables**, environment **Production only**:
-   - `GMAIL_USER`: the kitchen's Gmail address
-   - `GMAIL_APP_PASSWORD`: the 16 letters from step 1
+   - `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`: from step 1
    - `ANTHROPIC_API_KEY`: from step 2
    - `SUPABASE_SERVICE_ROLE_KEY`: from step 3
    - `ADMIN_PASSWORD`: a **new** admin password (the old one was visible in
      the website's code)
-   - `ADMIN_SESSION_SECRET` and `MAIL_CRON_SECRET`: two long random strings,
-     e.g. from `openssl rand -hex 32`
+   - `ADMIN_SESSION_SECRET` and `MAIL_CRON_SECRET`: two long random strings
+     (already added). Changing `ADMIN_SESSION_SECRET` means connecting Gmail
+     again.
 
-   For **Preview** and **Development**, set `MAIL_DRY_RUN=1` instead, so test
-   deployments never send email, never change Gmail, and Yes / No there change
-   nothing. Then redeploy.
+   **Preview** and **Development** have `MAIL_DRY_RUN=1`, so test deployments
+   never send email or change Gmail, and Yes / No there change nothing. Then
+   redeploy.
 5. **Delete `NEXT_PUBLIC_ADMIN_PASSWORD`** from Vercel and redeploy. From then on
    the admin pages use the new password.
-6. **Supabase SQL editor.** Store the cron secret (the same value as
-   `MAIL_CRON_SECRET`):
-   `SELECT vault.create_secret('<MAIL_CRON_SECRET>', 'mail_cron_secret', 'Bearer for /api/mail/sync');`
-   Then run `supabase-migrations/2026-10-14-add-mail-sync-cron.sql`.
-7. **Admin → Mail → ⚙ Settings.** Choose **Shadow**, wait for a few emails and
-   check the summaries. Then choose **Live**.
+6. **Admin → Mail → ⚙ Settings → Connect Gmail.** Sign in with the kitchen's
+   Google account. Google says the app isn't verified (it's your own app):
+   click **Advanced → Go to Kitchen of Kindness**, tick the Gmail box, Allow.
+7. **Choose Shadow**, wait for a few emails and check the summaries. Then choose
+   **Live**.
+
+The mail check runs every 5 minutes from Supabase (`pg_cron`, see
+`supabase-migrations/2026-10-14-add-mail-sync-cron.sql`; the secret is in
+Supabase Vault as `mail_cron_secret`). If the Google password is changed or
+access is removed, Mail shows "Connect Gmail again".
+
+An app password still works instead of Google sign-in (`GMAIL_USER` +
+`GMAIL_APP_PASSWORD`), but a connected Google account is used first.
 
 Local testing without touching anything real: `MAIL_FAKE=1 ADMIN_PASSWORD=test
 ADMIN_SESSION_SECRET=<anything long> npm run dev` uses a made-up inbox and an

@@ -5,6 +5,7 @@ import { adminStore, json, jsonError, syncStatus } from '../../../../lib/mail/ap
 import { DEFAULT_TEMPLATES, TEMPLATE_HELP } from '../../../../lib/mail/config';
 import { firstName, formatDays, render } from '../../../../lib/mail/templates';
 import { getMailAdapters, mailConfig } from '../../../../lib/mail/runtime';
+import { forgetAccessTokens } from '../../../../lib/mail/google';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -55,7 +56,6 @@ export async function POST(request) {
   const { store, response } = adminStore(request);
   if (response) return response;
   const cfg = mailConfig();
-  if (!cfg.hasGmail || !cfg.user) return jsonError(503, 'no_gmail', 'Gmail is not connected yet.');
   let body = {};
   try {
     body = await request.json();
@@ -73,17 +73,20 @@ export async function POST(request) {
         family_id: 999
       })
     : render(settings?.auto_reply_body || DEFAULT_TEMPLATES.auto_reply_body, { name: firstName('Sample Person') });
-  const { smtp } = getMailAdapters();
+  const adapters = await getMailAdapters(store);
+  if (adapters.error) return jsonError(503, 'no_gmail', adapters.error);
+  const { smtp, user } = adapters;
   try {
     await smtp.send({
-      to: cfg.user,
+      to: user,
       subject: approval ? 'TEST: approval email' : 'TEST: automatic reply',
       text,
       auto: !approval
     });
-    return json({ ok: true, to: cfg.user, dryRun: cfg.dryRun });
+    return json({ ok: true, to: user, dryRun: cfg.dryRun });
   } catch (err) {
-    return jsonError(502, 'send_failed', err?.code === 'EAUTH' ? 'Gmail refused the login. Check the app password.' : 'Sending failed.');
+    if (err?.code === 'EAUTH' || err?.code === 'EOAUTH2') forgetAccessTokens();
+    return jsonError(502, 'send_failed', err?.code === 'EAUTH' || err?.code === 'EOAUTH2' ? 'Gmail refused the login. Connect Gmail again in Settings.' : 'Sending failed.');
   } finally {
     smtp.close?.();
   }
