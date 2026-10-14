@@ -15,7 +15,7 @@
 import { adminStore, json, jsonError, publicRequest } from '../../../../../lib/mail/api';
 import { UNDECIDED } from '../../../../../lib/mail/store';
 import { validateFamilyPayload } from '../../../../../lib/mail/fields';
-import { mailConfig } from '../../../../../lib/mail/runtime';
+import { accountEmail, mailConfig } from '../../../../../lib/mail/runtime';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -32,7 +32,7 @@ export async function GET(request, { params }) {
   const id = await load(params);
   const r = id && (await store.getRequest(id));
   if (!r) return jsonError(404, 'not_found', 'Request not found.');
-  return json({ request: publicRequest(r, await store.messagesFor(id)) });
+  return json({ request: publicRequest(r, await store.messagesFor(id), accountEmail(await store.getSettings())) });
 }
 
 const conflict = () => jsonError(409, 'changed', 'This request was already handled. Refresh the list.');
@@ -50,10 +50,11 @@ export async function POST(request, { params }) {
     return jsonError(400, 'bad_json', 'Bad request.');
   }
   const now = new Date().toISOString();
-  const done = updated => (updated ? json({ ok: true, request: publicRequest(updated) }) : conflict());
   // Practice (shadow mode or a dry-run server): decisions are tried out but
   // nothing is changed.
   const settings = await store.getSettings();
+  const user = accountEmail(settings);
+  const done = updated => (updated ? json({ ok: true, request: publicRequest(updated, null, user) }) : conflict());
   const shadow = settings?.mode === 'shadow';
   const dryRun = mailConfig().dryRun;
   const practice = shadow || dryRun ? { ok: true, shadow, dryRun: dryRun && !shadow } : null;
@@ -81,7 +82,7 @@ export async function POST(request, { params }) {
         try {
           const familyId = await store.approve(id, v.family, body.sendEmail !== false);
           const updated = await store.getRequest(id);
-          return json({ ok: true, family_id: familyId, request: publicRequest(updated) });
+          return json({ ok: true, family_id: familyId, request: publicRequest(updated, null, user) });
         } catch (err) {
           if (err.code === '23505' && attempt < 3) continue;
           if (/request_is_/.test(err.message)) return conflict();

@@ -69,7 +69,8 @@ function timeAgo(iso) {
 const typingIn = el =>
   !!el && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName));
 
-export default function MailTab({ families = [], onFamiliesChanged, googleReady = false, onCounts }) {
+// notice: [kind, text] to show on top (e.g. after coming back from "Connect Gmail").
+export default function MailTab({ families = [], onFamiliesChanged, googleReady = false, onCounts, notice = null }) {
   // checking | login | ready | not_configured | error
   const [session, setSession] = useState('checking');
   const [password, setPassword] = useState('');
@@ -604,8 +605,21 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
   }
 
   const notices = [];
+  const connect = label => (
+    <a className="mail-inline-btn" href="/api/mail/google/start">
+      {label}
+    </a>
+  );
+  if (notice) notices.push(notice);
   if (sync?.fake) notices.push(['info', 'Test mode: a fake inbox, nothing real is read or sent.']);
-  if (sync && !sync.has_gmail) notices.push(['warn', 'Gmail isn’t connected yet (GMAIL_USER and GMAIL_APP_PASSWORD in Vercel).']);
+  if (sync && !sync.has_gmail) {
+    notices.push(
+      sync.google_ready
+        ? ['warn', 'Gmail isn’t connected yet.', connect('Connect Gmail')]
+        : ['warn', 'Gmail isn’t connected yet. First add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in Vercel (README → Mail).']
+    );
+  }
+  if (sync?.gmail_auth_error) notices.push(['error', sync.gmail_auth_error, sync.google_ready ? connect('Connect Gmail again') : null]);
   if (sync && !sync.has_ai) notices.push(['warn', 'Summaries are off until ANTHROPIC_API_KEY is set in Vercel.']);
   if (sync?.mode === 'off') notices.push(['info', 'Mail checking is off. Turn it on in ⚙ Settings (start with Shadow to try it safely).']);
   if (sync?.mode === 'shadow') {
@@ -614,7 +628,7 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
   if (sync?.dry_run) {
     notices.push(['info', 'Dry run: this copy reads and summarizes mail but never sends email or changes Gmail, and Yes / No change nothing.']);
   }
-  if (sync?.last_sync_error) notices.push(['error', sync.last_sync_error]);
+  if (sync?.last_sync_error && sync.last_sync_error !== sync?.gmail_auth_error) notices.push(['error', sync.last_sync_error]);
   if (syncError) notices.push(['error', syncError]);
   if (banner) notices.push(['error', banner]);
   const newest = queue[queue.length - 1];
@@ -658,8 +672,10 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
         </div>
       </div>
 
-      {notices.map(([kind, text], i) => (
-        <div key={i} className={`mail-notice ${kind}`}>{text}</div>
+      {notices.map(([kind, text, action], i) => (
+        <div key={i} className={`mail-notice ${kind}`}>
+          {text} {action}
+        </div>
       ))}
 
       {settingsOpen && (
@@ -1129,10 +1145,21 @@ function MailSettings({ onSaved, onUnauthorized, draft, showToast }) {
       return next;
     });
 
+  const disconnect = async () => {
+    if (!confirm('Disconnect Gmail? Mail checking will be turned Off until it is connected again.')) return;
+    const r = await api('/api/mail/google/disconnect', { method: 'POST' });
+    if (r.status === 401) return loggedOut();
+    if (!r.ok) return showToast(r.data?.message || 'Could not disconnect.', 'warn');
+    setData(d => ({ ...d, sync: r.data.sync, settings: { ...d.settings, mode: 'off' } }));
+    setForm(f => ({ ...f, mode: 'off' }));
+    onSaved?.(r.data.sync);
+    showToast('Gmail disconnected', 'ok');
+  };
+
   const save = async () => {
     if (form.mode === 'live' && data.settings.mode !== 'live') {
       const ok = confirm(
-        'Turn on Live?\n\nNew emails from now on get the automatic reply, and requests move out of the inbox into the ' +
+        `Turn on Live for ${data.sync?.gmail_user || 'the connected Gmail'}?\n\nNew emails from now on get the automatic reply, and requests move out of the inbox into the ` +
           '"Kitchen Requests" folder in Gmail. Yes on a request adds the family and sends the approval email.'
       );
       if (!ok) return;
@@ -1162,7 +1189,19 @@ function MailSettings({ onSaved, onUnauthorized, draft, showToast }) {
   return (
     <div className="mail-settings">
       <div className="mail-settings-status">
-        <span>Gmail: {sync.has_gmail ? `connected as ${sync.gmail_user}` : 'not connected'}</span>
+        <span>
+          Gmail: {sync.has_gmail ? `connected as ${sync.gmail_user}` : 'not connected'}{' '}
+          {sync.google_ready && !sync.fake && (
+            <a className="mail-inline-btn" href="/api/mail/google/start">
+              {sync.gmail_via === 'google' ? 'Use another account' : 'Connect Gmail'}
+            </a>
+          )}{' '}
+          {sync.gmail_via === 'google' && (
+            <button type="button" className="mail-inline-btn" onClick={disconnect}>
+              Disconnect
+            </button>
+          )}
+        </span>
         <span>Claude summaries: {sync.has_ai ? 'on' : 'off (no API key)'}</span>
         <span>Last check: {sync.last_sync_at ? new Date(sync.last_sync_at).toLocaleString() : 'never'}</span>
       </div>

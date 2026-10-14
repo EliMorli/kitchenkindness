@@ -92,6 +92,7 @@ export default function AdminPage() {
   const [googleReady, setGoogleReady] = useState(false);
   const [googleFailed, setGoogleFailed] = useState(false);
   const [mailCount, setMailCount] = useState(null);
+  const [mailNotice, setMailNotice] = useState(null);
   const addressInputRef = useRef(null);
   const [copiedFlash, setCopiedFlash] = useState(false);
   const [backfillProgress, setBackfillProgress] = useState(null);
@@ -125,6 +126,29 @@ export default function AdminPage() {
     latitude: null,
     longitude: null
   });
+
+  // Back from "Connect Gmail" (Google's sign-in): open the Mail tab and say
+  // how it went, then clean the address bar.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get('mail');
+    if (!result) return;
+    const reasons = {
+      login: 'Log in to Mail first, then connect Gmail.',
+      denied: 'Google sign-in was cancelled.',
+      expired: 'The sign-in took too long. Try Connect Gmail again.',
+      not_configured: 'Google sign-in isn’t set up yet (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET in Vercel).',
+      no_gmail_scope: 'Gmail access wasn’t allowed. Connect again and tick the box that lets the app read and send email.',
+      no_refresh_token: 'Google didn’t give lasting access. Try Connect Gmail again.'
+    };
+    setMailNotice(
+      result === 'connected'
+        ? ['ok', params.get('switched') ? 'Gmail connected. A different account than before, so mail checking was turned Off: choose Shadow or Live in ⚙ Settings.' : 'Gmail connected.']
+        : ['error', reasons[params.get('reason')] || 'Couldn’t connect Gmail. Try again.']
+    );
+    setActiveTab('mail');
+    window.history.replaceState(null, '', window.location.pathname);
+  }, []);
 
   useEffect(() => {
     const auth = localStorage.getItem('kok_admin_authenticated');
@@ -2756,6 +2780,7 @@ export default function AdminPage() {
             googleReady={googleReady && !googleFailed}
             onFamiliesChanged={loadFamilies}
             onCounts={c => setMailCount(c?.badge || 0)}
+            notice={mailNotice}
           />
         )}
       </div>

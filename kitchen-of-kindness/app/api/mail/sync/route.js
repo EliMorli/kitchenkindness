@@ -3,7 +3,7 @@
 
 import { isAdminRequest, adminConfigured, sameOrigin } from '../../../../lib/adminSession';
 import { cronAuthorized, json, jsonError } from '../../../../lib/mail/api';
-import { getMailAdapters, getMailStore, mailConfig } from '../../../../lib/mail/runtime';
+import { getMailAdapters, getMailStore } from '../../../../lib/mail/runtime';
 import { runSync } from '../../../../lib/mail/sync';
 
 export const runtime = 'nodejs';
@@ -18,9 +18,15 @@ export async function POST(request) {
   }
   const store = getMailStore();
   if (!store) return jsonError(503, 'no_db', 'The server database key is not set.');
-  if (!mailConfig().hasGmail) return jsonError(503, 'no_gmail', 'Gmail is not connected yet (GMAIL_USER / GMAIL_APP_PASSWORD).');
   try {
-    const report = await runSync({ store, ...getMailAdapters() });
+    // Mail checking off: nothing to log in for.
+    if ((await store.getSettings())?.mode === 'off') return json({ skipped: 'off' });
+    const adapters = await getMailAdapters(store);
+    if (adapters.error) {
+      await store.updateSettings({ last_sync_at: new Date().toISOString(), last_sync_error: adapters.error });
+      return jsonError(503, 'no_gmail', adapters.error);
+    }
+    const report = await runSync({ store, ...adapters });
     return json(report);
   } catch (err) {
     // No email content in logs: just the error type.
