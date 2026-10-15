@@ -1,9 +1,22 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import Script from 'next/script';
 import { supabase } from '../../lib/supabase';
+import { computeGroups, groupBadge, isPickup, haversineKm } from '../../lib/groups';
+import { formatAddress, formatNote } from '../../lib/format';
+import {
+  loadDaysForWeek, dateRange, slugify, dayName as weekDayName, shortDate as weekShortDate,
+  activeSignups as weekActiveSignups, spotsLeft as weekSpotsLeft, loadOrdersForWeeks, orderTitle, toDateStr, parseDate
+} from '../../lib/weeks';
+import {
+  attachPauses, isDayPaused, activePauses, describePause, pauseWindow, pauseOccurrences, nextDateForDay, anchorDayFor
+} from '../../lib/pauses';
+import { loginAdmin, serverSession } from '../../lib/adminLogin';
+import { geocodeUS, geocoderAvailable } from '../../lib/geocode';
+import MailTab from './MailTab';
 
-const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD;
+const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 const ALL_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'];
 const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -24,6 +37,41 @@ const generateDeliveryDates = () => {
 
 const deliveryDates = generateDeliveryDates();
 
+const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const DELIVERY_RANGE_START = new Date(2026, 0, 25);
+const DELIVERY_RANGE_END = new Date(2026, 5, 30);
+
+const getInitialDeliveryDate = () => {
+  const today = new Date();
+  if (today.getDay() >= 0 && today.getDay() <= 4) return today;
+  const daysUntilSunday = 7 - today.getDay();
+  const next = new Date(today);
+  next.setDate(today.getDate() + daysUntilSunday);
+  return next;
+};
+
+const getInitialWeekStart = () => {
+  const today = new Date();
+  const sunday = new Date(today);
+  sunday.setDate(today.getDate() - today.getDay());
+  return sunday;
+};
+
+// Install the Google Maps auth-failure handler at module scope so it exists
+// before Google's script executes. Without this, an expired/invalid key
+// triggers a modal alert that blocks all page interaction (including typing
+// the address). The handler flips a window flag and dispatches a DOM event
+// the component can subscribe to for its own state update.
+if (typeof window !== 'undefined' && !window.__gmAuthHandlerInstalled) {
+  window.__gmAuthHandlerInstalled = true;
+  window.__gmAuthFailed = false;
+  window.gm_authFailure = () => {
+    console.warn('Google Maps API auth failed — falling back to manual address entry.');
+    window.__gmAuthFailed = true;
+    window.dispatchEvent(new CustomEvent('gm-auth-failed'));
+  };
+}
+
 export default function AdminPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [passwordInput, setPasswordInput] = useState('');
@@ -38,20 +86,69 @@ export default function AdminPage() {
   const [historySearch, setHistorySearch] = useState('');
   const [historyFilter, setHistoryFilter] = useState('all');
   const [allRecords, setAllRecords] = useState([]);
+  const [signupsView, setSignupsView] = useState('today');
+  const [signupsDate, setSignupsDate] = useState(getInitialDeliveryDate);
+  const [signupsWeekStart, setSignupsWeekStart] = useState(getInitialWeekStart);
+  const [googleReady, setGoogleReady] = useState(false);
+  const [googleFailed, setGoogleFailed] = useState(false);
+  const [mailCount, setMailCount] = useState(null);
+  const [mailNotice, setMailNotice] = useState(null);
+  const addressInputRef = useRef(null);
+  const [copiedFlash, setCopiedFlash] = useState(false);
+  const [backfillProgress, setBackfillProgress] = useState(null);
+  const [formatProgress, setFormatProgress] = useState(null);
+  const [weeks, setWeeks] = useState([]);
+  const [weekForm, setWeekForm] = useState({
+    title: '', emoji: '🍎', subtitle: '', start_date: '', end_date: '', days: {}
+  });
+  const [weekSaving, setWeekSaving] = useState(false);
+  const [weekCopied, setWeekCopied] = useState(null);
+  const [printerSetupCopied, setPrinterSetupCopied] = useState(null);
+  const [printToast, setPrintToast] = useState(null);
+  const [editingFamily, setEditingFamily] = useState(null);
+  const [pausePlan, setPausePlan] = useState({});
+  const [orderForm, setOrderForm] = useState(null); // { weekId, id?, ...fields }
+  const [orderSaving, setOrderSaving] = useState(false);
+  const [editingWeekId, setEditingWeekId] = useState(null);
+  const [weekEdit, setWeekEdit] = useState(null);
 
   // Form state
   const [formData, setFormData] = useState({
     address: '',
+    unit: '',
     instructions: 'Leave at door',
     contact: '',
-    bags: 1,
-    extra_bags: 0,
     people_count: 1,
     delivery_days: [...ALL_DAYS],
     notes: '',
     saturday_meals: false,
-    active: true
+    active: true,
+    latitude: null,
+    longitude: null
   });
+
+  // Back from "Connect Gmail" (Google's sign-in): open the Mail tab and say
+  // how it went, then clean the address bar.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get('mail');
+    if (!result) return;
+    const reasons = {
+      login: 'Log in to Mail first, then connect Gmail.',
+      denied: 'Google sign-in was cancelled.',
+      expired: 'The sign-in took too long. Try Connect Gmail again.',
+      not_configured: 'Google sign-in isn’t set up yet (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET in Vercel).',
+      no_gmail_scope: 'Gmail access wasn’t allowed. Connect again and tick the box that lets the app read and send email.',
+      no_refresh_token: 'Google didn’t give lasting access. Try Connect Gmail again.'
+    };
+    setMailNotice(
+      result === 'connected'
+        ? ['ok', params.get('switched') ? 'Gmail connected. A different account than before, so mail checking was turned Off: choose Shadow or Live in ⚙ Settings.' : 'Gmail connected.']
+        : ['error', reasons[params.get('reason')] || 'Couldn’t connect Gmail. Try again.']
+    );
+    setActiveTab('mail');
+    window.history.replaceState(null, '', window.location.pathname);
+  }, []);
 
   useEffect(() => {
     const auth = localStorage.getItem('kok_admin_authenticated');
@@ -61,12 +158,118 @@ export default function AdminPage() {
     setLoading(false);
   }, []);
 
+  // Mail tab badge: pending requests + ones needing attention (only when this
+  // browser has a server session; otherwise the tab shows a password box).
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    (async () => {
+      try {
+        const session = await serverSession();
+        if (!session.authenticated) return;
+        const res = await fetch('/api/mail/requests?view=counts', { credentials: 'same-origin', cache: 'no-store' });
+        if (!res.ok) return;
+        const { counts } = await res.json();
+        setMailCount(counts?.badge || 0);
+      } catch {
+        // no badge
+      }
+    })();
+  }, [isAuthenticated]);
+
   useEffect(() => {
     if (isAuthenticated) {
       loadFamilies();
       loadAssignments();
+      loadWeeks();
     }
   }, [isAuthenticated]);
+
+  // Status readback from the silent print tab (see /admin/print-labels).
+  useEffect(() => {
+    const onMessage = (event) => {
+      if (event.origin !== window.location.origin) return;
+      const d = event.data;
+      if (!d || d.type !== 'kok-labels-printed') return;
+      const what = d.test ? 'test label' : `${d.total} label${d.total === 1 ? '' : 's'}`;
+      const text = d.status === 'done'
+        ? `🖨️ Handed ${what} to the printer — watch it print.`
+        : d.status === 'no-labels'
+          ? 'No labels for that day.'
+          : d.status === 'dialog'
+            ? '⚠️ A print dialog opened, so this browser is not in silent-print mode. If you cancelled, nothing printed — see Printer setup.'
+            : '⚠️ Printing did not start — the window was not opened from the silent-print shortcut. See Printer setup.';
+      setPrintToast({ text, kind: d.status === 'done' ? 'ok' : d.status === 'no-labels' ? 'info' : 'warn' });
+      setTimeout(() => setPrintToast(null), 8000);
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
+
+  useEffect(() => {
+    // The module-scope handler above installs window.gm_authFailure before
+    // any React lifecycle runs. Here we sync that flag into component state
+    // — both catching a failure that already happened and subscribing for
+    // future ones.
+    if (typeof window !== 'undefined' && window.__gmAuthFailed) {
+      setGoogleFailed(true);
+      return;
+    }
+    const handler = () => setGoogleFailed(true);
+    window.addEventListener('gm-auth-failed', handler);
+    return () => window.removeEventListener('gm-auth-failed', handler);
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== 'families') return;
+    if (!googleReady) return;
+    if (googleFailed) return;
+    if (!addressInputRef.current) return;
+    if (!window.google?.maps?.places?.Autocomplete) return;
+
+    // Probe the Places API before wiring up the widget. A key can load the
+    // base Maps JS API but still be blocked from calling Places specifically
+    // (ApiTargetBlockedMapError → REQUEST_DENIED status). That doesn't fire
+    // gm_authFailure, so we detect it here and fall back to manual entry
+    // instead of letting the widget spam errors on every keystroke.
+    const probe = new window.google.maps.places.AutocompleteService();
+    probe.getPlacePredictions({ input: '1' }, (_predictions, status) => {
+      const S = window.google.maps.places.PlacesServiceStatus;
+      if (status === S.REQUEST_DENIED) {
+        console.warn('Google Places API rejected the request — falling back to manual address entry.');
+        setGoogleFailed(true);
+      }
+    });
+
+    const ac = new window.google.maps.places.Autocomplete(addressInputRef.current, {
+      types: ['address'],
+      componentRestrictions: { country: 'us' },
+      fields: ['formatted_address', 'geometry']
+    });
+
+    const listener = ac.addListener('place_changed', () => {
+      const place = ac.getPlace();
+      if (!place) return;
+      setFormData(prev => {
+        const next = { ...prev };
+        if (place.formatted_address) next.address = place.formatted_address;
+        const loc = place.geometry?.location;
+        if (loc && typeof loc.lat === 'function' && typeof loc.lng === 'function') {
+          next.latitude = loc.lat();
+          next.longitude = loc.lng();
+        }
+        return next;
+      });
+    });
+
+    return () => {
+      if (window.google?.maps?.event) {
+        window.google.maps.event.removeListener(listener);
+        if (addressInputRef.current) {
+          window.google.maps.event.clearInstanceListeners(addressInputRef.current);
+        }
+      }
+    };
+  }, [activeTab, googleReady, googleFailed]);
 
   const loadFamilies = async () => {
     if (!supabase) return;
@@ -77,7 +280,7 @@ export default function AdminPage() {
         .order('family_id', { ascending: true });
 
       if (error) throw error;
-      setFamilies(data || []);
+      setFamilies(await attachPauses(supabase, data || []));
     } catch (error) {
       console.error('Error loading families:', error);
     }
@@ -111,32 +314,47 @@ export default function AdminPage() {
     setLoading(false);
   };
 
-  const handlePasswordSubmit = (e) => {
+  const handlePasswordSubmit = async (e) => {
     e.preventDefault();
-    if (passwordInput === ADMIN_PASSWORD) {
+    const result = await loginAdmin(passwordInput);
+    if (result.ok) {
       setIsAuthenticated(true);
-      localStorage.setItem('kok_admin_authenticated', 'true');
       setPasswordError('');
     } else {
-      setPasswordError('Incorrect admin password.');
+      setPasswordError(result.error);
     }
   };
 
   const handleInputChange = (e) => {
     const { name, value, type, checked } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: type === 'checkbox' ? checked : type === 'number' ? parseInt(value) || 0 : value
-    }));
+    setFormData(prev => {
+      const next = {
+        ...prev,
+        [name]: type === 'checkbox' ? checked : type === 'number' ? parseInt(value) || 0 : value
+      };
+      // Any manual edit to the address invalidates the last Places-derived
+      // coords. If the user then picks a suggestion, place_changed repopulates
+      // them; otherwise the family stays "Ungrouped" until Backfill runs.
+      if (name === 'address') {
+        next.latitude = null;
+        next.longitude = null;
+      }
+      return next;
+    });
+    if (name === 'saturday_meals' && checked) {
+      setPausePlan(pp => { const { saturday: _drop, ...rest } = pp; return rest; });
+    }
   };
 
   const handleDayToggle = (day) => {
-    setFormData(prev => ({
-      ...prev,
-      delivery_days: prev.delivery_days.includes(day)
-        ? prev.delivery_days.filter(d => d !== day)
-        : [...prev.delivery_days, day]
-    }));
+    setFormData(prev => {
+      const removing = prev.delivery_days.includes(day);
+      if (!removing) setPausePlan(pp => { const { [`day:${day}`]: _drop, ...rest } = pp; return rest; });
+      return {
+        ...prev,
+        delivery_days: removing ? prev.delivery_days.filter(d => d !== day) : [...prev.delivery_days, day]
+      };
+    });
   };
 
   const getNextFamilyId = () => {
@@ -148,17 +366,20 @@ export default function AdminPage() {
   const resetForm = () => {
     setFormData({
       address: '',
+      unit: '',
       instructions: 'Leave at door',
       contact: '',
-      bags: 1,
-      extra_bags: 0,
       people_count: 1,
       delivery_days: [...ALL_DAYS],
       notes: '',
       saturday_meals: false,
-      active: true
+      active: true,
+      latitude: null,
+      longitude: null
     });
     setEditingId(null);
+    setEditingFamily(null);
+    setPausePlan({});
   };
 
   const handleSubmit = async (e) => {
@@ -170,43 +391,140 @@ export default function AdminPage() {
 
     if (!supabase) return;
     setSaving(true);
-    try {
-      if (editingId) {
-        const { error } = await supabase
-          .from('families')
-          .update({
-            address: formData.address.trim(),
-            instructions: formData.instructions.trim(),
-            contact: formData.contact.trim(),
-            bags: formData.bags,
-            extra_bags: formData.extra_bags,
-            people_count: formData.people_count,
-            delivery_days: formData.delivery_days,
-            notes: formData.notes.trim(),
-            saturday_meals: formData.saturday_meals,
-            active: formData.active
-          })
-          .eq('id', editingId);
 
-        if (error) throw error;
+    // If the address was typed by hand (no Places pick → no coords) and isn't
+    // a pickup entry, geocode it now: offer the verified formatted address and
+    // capture lat/lng so the family lands in a delivery group. Declining (or a
+    // failed lookup) saves exactly what was typed, without coordinates.
+    let address = formData.address.trim();
+    let latitude = formData.latitude;
+    let longitude = formData.longitude;
+    if (latitude == null && !isPickup({ address }) && geocoderAvailable()) {
+      const top = await geocodeUS(address);
+      if (top) {
+        if (confirm(
+          `Verified address found:\n\n${top.formatted_address}\n\n` +
+          'OK = save the verified address (family gets a delivery group).\n' +
+          'Cancel = keep exactly what you typed (no group).'
+        )) {
+          address = top.formatted_address;
+          latitude = top.lat;
+          longitude = top.lng;
+        }
       } else {
-        const { error } = await supabase
-          .from('families')
-          .insert({
-            family_id: getNextFamilyId(),
-            address: formData.address.trim(),
-            instructions: formData.instructions.trim(),
-            contact: formData.contact.trim(),
-            bags: formData.bags,
-            extra_bags: formData.extra_bags,
-            people_count: formData.people_count,
-            delivery_days: formData.delivery_days,
-            notes: formData.notes.trim(),
-            saturday_meals: formData.saturday_meals,
-            active: formData.active
-          });
+        console.warn('Geocode found no match for the typed address.');
+      }
+    }
 
-        if (error) throw error;
+    try {
+      // Temporary pauses: keep the day / Saturday in the saved schedule and
+      // record a pause window instead, so it resumes on its own.
+      const pausesToInsert = [];
+      const pausesToClear = []; // { kind, day_name } — replaced or made moot by this edit
+      let deliveryDays = [...formData.delivery_days];
+      let saturdayMeals = formData.saturday_meals;
+      if (editingFamily) {
+        removedDays.forEach(day => {
+          const plan = planFor(`day:${day}`);
+          pausesToClear.push({ kind: 'day', day_name: day });
+          if (plan.mode === 'temp') {
+            deliveryDays.push(day);
+            pausesToInsert.push({
+              family_id: editingFamily.family_id,
+              kind: 'day',
+              day_name: day,
+              ...pauseWindow('day', day, Number(plan.weeks) || 1, !!plan.skipThisWeek)
+            });
+          }
+        });
+        if (removedSaturday) {
+          const plan = planFor('saturday');
+          pausesToClear.push({ kind: 'saturday', day_name: null });
+          if (plan.mode === 'temp') {
+            saturdayMeals = true;
+            pausesToInsert.push({
+              family_id: editingFamily.family_id,
+              kind: 'saturday',
+              day_name: null,
+              ...pauseWindow('saturday', null, Number(plan.weeks) || 1, !!plan.skipThisWeek)
+            });
+          }
+        }
+        // Volunteers who already claimed a delivery inside the pause window.
+        const orphaned = assignments.filter(a =>
+          a.family_id === editingFamily.family_id &&
+          pausesToInsert.some(pw => {
+            if (a.delivery_date < pw.start_date || a.delivery_date > pw.end_date) return false;
+            if (pw.kind === 'day') return dayNames[parseDate(a.delivery_date).getDay()] === pw.day_name;
+            return dayNames[parseDate(a.delivery_date).getDay()] === 'Thursday';
+          })
+        );
+        if (orphaned.length) {
+          const list = orphaned.map(a => `${a.volunteer_name} — ${formatDate(a.delivery_date)}`).join('\n');
+          if (!confirm(`Heads up: these volunteers already signed up for dates this pause skips:\n\n${list}\n\nThey won't see the delivery anymore. Save anyway? (You may want to let them know.)`)) {
+            setSaving(false);
+            return;
+          }
+        }
+      }
+      deliveryDays = ALL_DAYS.filter(d => deliveryDays.includes(d));
+
+      const payload = {
+        address,
+        unit: formData.unit.trim(),
+        instructions: formData.instructions.trim(),
+        contact: formData.contact.trim(),
+        people_count: formData.people_count,
+        delivery_days: deliveryDays,
+        notes: formData.notes.trim(),
+        saturday_meals: saturdayMeals,
+        active: formData.active,
+        latitude,
+        longitude
+      };
+      const save = data =>
+        editingId
+          ? supabase.from('families').update(data).eq('id', editingId)
+          : supabase.from('families').insert({ family_id: getNextFamilyId(), ...data });
+
+      let { error } = await save(payload);
+      if (error && error.code === '23505' && !editingId) {
+        // That family number was just taken (e.g. a request approved in the
+        // Mail tab): reload the list and take the next free number.
+        const { data: latest } = await supabase.from('families').select('family_id').order('family_id', { ascending: false }).limit(1);
+        const next = Math.max(349, latest?.[0]?.family_id ?? 349) + 1;
+        ({ error } = await supabase.from('families').insert({ family_id: next, ...payload }));
+      }
+      if (error && /unit/i.test(error.message || '')) {
+        // families.unit column not migrated yet — save the rest, warn once.
+        console.warn('families.unit column missing; saving without unit. Run the add-family-unit migration.');
+        const { unit, ...withoutUnit } = payload;
+        ({ error } = await save(withoutUnit));
+        if (!error && payload.unit) {
+          alert('Saved, but the Unit # could not be stored yet (database migration pending). Re-save the unit after the migration runs.');
+        }
+      }
+      if (error) throw error;
+
+      if (pausesToClear.length || pausesToInsert.length) {
+        try {
+          for (const c of pausesToClear) {
+            let q = supabase.from('family_pauses').delete().eq('family_id', editingFamily.family_id).eq('kind', c.kind);
+            if (c.kind === 'day') q = q.eq('day_name', c.day_name);
+            const { error: dErr } = await q;
+            if (dErr) throw dErr;
+          }
+          if (pausesToInsert.length) {
+            const { error: pErr } = await supabase.from('family_pauses').insert(pausesToInsert);
+            if (pErr) throw pErr;
+          }
+        } catch (pauseErr) {
+          console.error('Error saving pause:', pauseErr);
+          await loadFamilies();
+          alert('The family was saved, but the pause could not be recorded. Open the family again, turn the day off, and save to retry.');
+          setSaving(false);
+          return;
+        }
       }
 
       await loadFamilies();
@@ -221,19 +539,58 @@ export default function AdminPage() {
   const handleEdit = (family) => {
     setFormData({
       address: family.address,
+      unit: family.unit || '',
       instructions: family.instructions || 'Leave at door',
       contact: family.contact || '',
-      bags: family.bags || 1,
-      extra_bags: family.extra_bags || 0,
       people_count: family.people_count || 1,
       delivery_days: family.delivery_days || [...ALL_DAYS],
       notes: family.notes || '',
       saturday_meals: family.saturday_meals || false,
-      active: family.active !== false
+      active: family.active !== false,
+      latitude: family.latitude ?? null,
+      longitude: family.longitude ?? null
     });
     setEditingId(family.id);
+    setEditingFamily(family);
+    setPausePlan({});
     setActiveTab('families');
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // Days / Saturday being turned OFF in this edit, compared to the saved family.
+  const removedDays = editingFamily
+    ? (editingFamily.delivery_days || ALL_DAYS).filter(d => !formData.delivery_days.includes(d))
+    : [];
+  const removedSaturday = !!(editingFamily && editingFamily.saturday_meals && !formData.saturday_meals);
+  const DEFAULT_PLAN = { mode: 'temp', weeks: 1, skipThisWeek: false };
+  const planFor = key => pausePlan[key] || DEFAULT_PLAN;
+  const setPlan = (key, patch) =>
+    setPausePlan(prev => ({ ...prev, [key]: { ...(prev[key] || DEFAULT_PLAN), ...patch } }));
+  // Human preview of what a temp pause will skip ("Tue Sep 8 – Tue Sep 22").
+  const previewPause = (kind, day, plan) => {
+    try {
+      const w = pauseWindow(kind, day, Number(plan.weeks) || 1, !!plan.skipThisWeek);
+      const occ = pauseOccurrences({ ...w, kind });
+      const fmt = d => `${weekDayName(d).slice(0, 3)} ${weekShortDate(d)}`;
+      const back = parseDate(occ[occ.length - 1]); back.setDate(back.getDate() + 7);
+      return `skips ${occ.length === 1 ? fmt(occ[0]) : `${fmt(occ[0])} – ${fmt(occ[occ.length - 1])}`} · back ${fmt(toDateStr(back))}`;
+    } catch { return ''; }
+  };
+  const anchorIsToday = (kind, day) => {
+    try { return nextDateForDay(anchorDayFor(kind, day)) === toDateStr(new Date()); } catch { return false; }
+  };
+
+  const handleResumePause = async (pause) => {
+    if (!supabase) return;
+    if (!confirm(`Resume now? This removes: ${describePause(pause)}.`)) return;
+    try {
+      const { error } = await supabase.from('family_pauses').delete().eq('id', pause.id);
+      if (error) throw error;
+      await loadFamilies();
+    } catch (error) {
+      console.error('Error removing pause:', error);
+      alert('Could not remove the pause. Please try again.');
+    }
   };
 
   const handleDelete = async (family) => {
@@ -249,10 +606,561 @@ export default function AdminPage() {
         .eq('id', family.id);
 
       if (error) throw error;
+      // Pauses are keyed by family number, which getNextFamilyId can reuse.
+      await supabase.from('family_pauses').delete().eq('family_id', family.family_id);
       await loadFamilies();
     } catch (error) {
       console.error('Error deleting family:', error);
       alert('Error deleting family. Please try again.');
+    }
+  };
+
+  const handleCancelAssignment = async (assignment) => {
+    if (!supabase) return;
+    const family = families.find(f => f.family_id === assignment.family_id);
+    const familyLabel = family ? `${assignment.family_id} (${family.address})` : `#${assignment.family_id}`;
+    const dateLabel = formatDate(assignment.delivery_date);
+    const message = assignment.delivered_at
+      ? `${assignment.volunteer_name}'s delivery for family ${familyLabel} on ${dateLabel} is marked DELIVERED.\n\nClearing it will reopen the slot. The original delivery timestamp is kept in the audit trail. Continue?`
+      : `Cancel ${assignment.volunteer_name}'s sign-up for family ${familyLabel} on ${dateLabel}?`;
+    if (!confirm(message)) return;
+    try {
+      const { error } = await supabase
+        .from('delivery_assignments')
+        .update({ cancelled_at: new Date().toISOString() })
+        .eq('id', assignment.id);
+
+      if (error) throw error;
+      await loadAssignments();
+    } catch (error) {
+      console.error('Error cancelling assignment:', error);
+      alert('Error cancelling. Please try again.');
+    }
+  };
+
+  const handleBackfillCoordinates = async () => {
+    if (!supabase) return;
+    // Use the Maps JS API Geocoder, not the REST endpoint: Google rejects
+    // REST geocoding calls from keys with website/referrer restrictions,
+    // while the JS Geocoder honors them.
+    if (!window.google?.maps?.Geocoder) {
+      alert('Google Maps has not loaded on this page — check the API key, then reload and try again.');
+      return;
+    }
+    const missing = families.filter(
+      f => f.latitude == null || f.longitude == null
+    );
+    if (missing.length === 0) {
+      alert('All families already have coordinates.');
+      return;
+    }
+    if (!confirm(`Geocode ${missing.length} families via Google Maps?`)) return;
+
+    const geocoder = new window.google.maps.Geocoder();
+    setBackfillProgress({ done: 0, total: missing.length, current: null, failed: [] });
+    const failed = [];
+    for (let i = 0; i < missing.length; i++) {
+      const f = missing[i];
+      setBackfillProgress({ done: i, total: missing.length, current: f.family_id, failed });
+      try {
+        const { results } = await geocoder.geocode({ address: f.address });
+        const loc = results?.[0]?.geometry?.location;
+        if (!loc) {
+          console.warn(`Geocode returned no result for #${f.family_id} (${f.address})`);
+          failed.push({ family_id: f.family_id, status: 'NO_RESULT' });
+          continue;
+        }
+        const { error } = await supabase
+          .from('families')
+          .update({ latitude: loc.lat(), longitude: loc.lng() })
+          .eq('id', f.id);
+        if (error) {
+          console.warn(`Save failed for #${f.family_id}: ${error.message}`);
+          failed.push({ family_id: f.family_id, status: 'SAVE_ERROR' });
+        }
+      } catch (e) {
+        // The JS Geocoder rejects with the status in e.code (e.g. ZERO_RESULTS
+        // for a non-address like "pickup", OVER_QUERY_LIMIT when throttled).
+        const status = e?.code || String(e);
+        console.warn(`Geocode failed for #${f.family_id} (${f.address}): ${status}`);
+        failed.push({ family_id: f.family_id, status });
+        if (status === 'OVER_QUERY_LIMIT') {
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      await new Promise(r => setTimeout(r, 250));
+    }
+    setBackfillProgress({ done: missing.length, total: missing.length, current: null, failed });
+    await loadFamilies();
+    if (failed.length) {
+      const failedIds = failed.map(x => `#${x.family_id} (${x.status})`).join(', ');
+      alert(
+        `Backfill complete: ${missing.length - failed.length} succeeded, ` +
+        `${failed.length} failed:\n\n${failedIds}\n\nFailed families stay "Ungrouped" — usually the address isn't a real street address.`
+      );
+    } else {
+      alert(`Backfill complete: geocoded ${missing.length} families.`);
+    }
+    setTimeout(() => setBackfillProgress(null), 4000);
+  };
+
+  // One-time cleanup: rewrite stored addresses into Google's canonical
+  // format. Unit/apartment numbers from the original text are re-inserted
+  // (Google's formatter drops them), and a row is only rewritten when the
+  // re-geocoded location agrees with the stored coordinates.
+  const handleFormatAddresses = async () => {
+    if (!supabase) return;
+    if (!window.google?.maps?.Geocoder) {
+      alert('Google Maps has not loaded on this page — check the API key, then reload and try again.');
+      return;
+    }
+    const candidates = families.filter(f =>
+      f.latitude != null &&
+      f.longitude != null &&
+      !isPickup(f) &&
+      !/,\s*USA\s*$/.test(f.address || '')
+    );
+    if (candidates.length === 0) {
+      alert('All addresses are already formatted.');
+      return;
+    }
+    if (!confirm(
+      `Reformat ${candidates.length} addresses into full "street, city, CA zip" form? ` +
+      'Apartment/unit numbers are preserved.'
+    )) return;
+
+    const geocoder = new window.google.maps.Geocoder();
+    setFormatProgress({ done: 0, total: candidates.length, current: null, failed: [] });
+    const failed = [];
+    for (let i = 0; i < candidates.length; i++) {
+      const f = candidates[i];
+      setFormatProgress({ done: i, total: candidates.length, current: f.family_id, failed });
+      try {
+        const { results } = await geocoder.geocode({
+          address: f.address,
+          componentRestrictions: { country: 'US' }
+        });
+        const top = results?.[0];
+        const loc = top?.geometry?.location;
+        if (!loc) {
+          failed.push({ family_id: f.family_id, status: 'NO_RESULT' });
+          continue;
+        }
+        // Refuse to rewrite if the fresh geocode lands somewhere else than the
+        // stored coordinates (>300m apart) — the text would change meaning.
+        const distKm = haversineKm(
+          { latitude: f.latitude, longitude: f.longitude },
+          { latitude: loc.lat(), longitude: loc.lng() }
+        );
+        if (distKm > 0.3) {
+          console.warn(`Skipping #${f.family_id}: re-geocode is ${distKm.toFixed(2)}km from stored location`);
+          failed.push({ family_id: f.family_id, status: 'LOCATION_MISMATCH' });
+          continue;
+        }
+        let formatted = top.formatted_address.replace(/,\s*USA\s*$/, '');
+        // Preserve unit/apartment from the original if Google dropped it.
+        const unitMatch = (f.address || '').match(/(?:#|\bapt\.?\s*|\bapartment\s*|\bunit\s*|\bste\.?\s*|\bsuite\s*)\s*([\w-]+)/i);
+        if (unitMatch && !new RegExp(`[#\\b]${unitMatch[1]}\\b`).test(formatted)) {
+          const parts = formatted.split(',');
+          parts[0] = `${parts[0]} #${unitMatch[1]}`;
+          formatted = parts.join(',');
+        }
+        if (formatted !== f.address) {
+          const { error } = await supabase
+            .from('families')
+            .update({ address: formatted })
+            .eq('id', f.id);
+          if (error) {
+            failed.push({ family_id: f.family_id, status: 'SAVE_ERROR' });
+          }
+        }
+      } catch (e) {
+        failed.push({ family_id: f.family_id, status: e?.code || String(e) });
+      }
+      await new Promise(r => setTimeout(r, 250));
+    }
+    setFormatProgress({ done: candidates.length, total: candidates.length, current: null, failed });
+    await loadFamilies();
+    if (failed.length) {
+      const failedIds = failed.map(x => `#${x.family_id} (${x.status})`).join(', ');
+      alert(
+        `Formatting complete: ${candidates.length - failed.length} updated, ` +
+        `${failed.length} skipped:\n\n${failedIds}\n\nSkipped rows keep their current address.`
+      );
+    } else {
+      alert(`Formatting complete: ${candidates.length} addresses updated.`);
+    }
+    setTimeout(() => setFormatProgress(null), 4000);
+  };
+
+  // ---- Special weeks (holiday prep sign-ups) ----
+  const loadWeeks = async () => {
+    if (!supabase) return;
+    try {
+      const { data, error } = await supabase
+        .from('volunteer_weeks')
+        .select('*')
+        .order('start_date', { ascending: false });
+      if (error) throw error;
+      const withDays = await Promise.all(
+        (data || []).map(async w => ({ ...w, days: await loadDaysForWeek(supabase, w.id), orders: [] }))
+      );
+      try {
+        const ordersByWeek = await loadOrdersForWeeks(supabase, withDays.map(w => w.id));
+        withDays.forEach(w => { w.orders = ordersByWeek.get(w.id) || []; });
+      } catch (e) {
+        console.error('Error loading special orders:', e);
+      }
+      setWeeks(withDays);
+    } catch (error) {
+      console.error('Error loading special weeks:', error);
+    }
+  };
+
+  const weekFormDates = dateRange(weekForm.start_date, weekForm.end_date);
+
+  const updateWeekFormDay = (date, patch) => {
+    setWeekForm(prev => ({
+      ...prev,
+      days: { ...prev.days, [date]: { capacity: '2', unlimited: false, note: '', time_label: '', ...(prev.days[date] || {}), ...patch } }
+    }));
+  };
+
+  const handleCreateWeek = async (e) => {
+    e.preventDefault();
+    if (!supabase) return;
+    if (!weekForm.title.trim() || !weekForm.start_date || !weekForm.end_date) {
+      alert('Title, start date, and end date are required.');
+      return;
+    }
+    if (weekFormDates.length === 0) {
+      alert('End date must be on or after the start date.');
+      return;
+    }
+    const slug = slugify(weekForm.title, weekForm.start_date);
+    if (weeks.some(w => w.slug === slug)) {
+      alert(`A week with the link "${slug}" already exists — change the title.`);
+      return;
+    }
+    setWeekSaving(true);
+    try {
+      const { data: week, error } = await supabase
+        .from('volunteer_weeks')
+        .insert({
+          slug,
+          title: weekForm.title.trim(),
+          subtitle: weekForm.subtitle.trim(),
+          emoji: weekForm.emoji.trim() || '🍎',
+          start_date: weekForm.start_date,
+          end_date: weekForm.end_date
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      const rows = weekFormDates.map(date => {
+        const d = weekForm.days[date] || {};
+        const unlimited = !!d.unlimited;
+        const cap = parseInt(d.capacity ?? '2', 10);
+        return {
+          week_id: week.id,
+          date,
+          capacity: unlimited ? null : (Number.isFinite(cap) && cap > 0 ? cap : 2),
+          note: (d.note || '').trim(),
+          time_label: (d.time_label || '').trim()
+        };
+      });
+      const { error: dErr } = await supabase.from('volunteer_week_days').insert(rows);
+      if (dErr) throw dErr;
+      setWeekForm({ title: '', emoji: '🍎', subtitle: '', start_date: '', end_date: '', days: {} });
+      await loadWeeks();
+      alert(`Created! Share: ${window.location.origin}/week/${slug}`);
+    } catch (error) {
+      console.error('Error creating week:', error);
+      alert('Error creating the week. Please try again.');
+    }
+    setWeekSaving(false);
+  };
+
+  const handleToggleWeekActive = async (week) => {
+    if (!supabase) return;
+    try {
+      const { error } = await supabase
+        .from('volunteer_weeks')
+        .update({ active: !week.active })
+        .eq('id', week.id);
+      if (error) throw error;
+      await loadWeeks();
+    } catch (error) {
+      console.error('Error updating week:', error);
+    }
+  };
+
+  const handleDeleteWeek = async (week) => {
+    if (!supabase) return;
+    const count = week.days.reduce((s, d) => s + weekActiveSignups(d).length, 0);
+    if (!confirm(`Delete "${week.title}" and its ${count} sign-up${count === 1 ? '' : 's'}? This cannot be undone.`)) return;
+    try {
+      const { error } = await supabase.from('volunteer_weeks').delete().eq('id', week.id);
+      if (error) throw error;
+      await loadWeeks();
+    } catch (error) {
+      console.error('Error deleting week:', error);
+      alert('Error deleting the week.');
+    }
+  };
+
+  const handleCancelWeekSignup = async (signup, day) => {
+    if (!supabase) return;
+    if (!confirm(`Remove ${signup.volunteer_name} from ${weekDayName(day.date)}?`)) return;
+    try {
+      const { error } = await supabase
+        .from('volunteer_week_signups')
+        .update({ cancelled_at: new Date().toISOString() })
+        .eq('id', signup.id);
+      if (error) throw error;
+      await loadWeeks();
+    } catch (error) {
+      console.error('Error cancelling sign-up:', error);
+    }
+  };
+
+  const buildWeekBlurb = (week) => {
+    const lines = [`${week.emoji} *${week.title}*`];
+    if (week.subtitle) lines.push(week.subtitle);
+    lines.push('');
+    week.days.forEach(d => {
+      const left = weekSpotsLeft(d);
+      const status = left === null
+        ? 'unlimited — bring friends!'
+        : left === 0 ? 'FULL 🎉' : `${left} ${left === 1 ? 'spot' : 'spots'} left`;
+      const time = d.time_label ? ` — ${d.time_label}` : '';
+      lines.push(`${weekDayName(d.date).slice(0, 3)} ${weekShortDate(d.date)}${time} — ${status}${d.note ? ` (${d.note})` : ''}`);
+    });
+    lines.push('');
+    lines.push(`👉 Sign up here: ${window.location.origin}/week/${week.slug}`);
+    return lines.join('\n');
+  };
+
+  const copyWeekText = async (key, text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setWeekCopied(key);
+      setTimeout(() => setWeekCopied(null), 1500);
+    } catch (err) {
+      console.error('Clipboard write failed:', err);
+    }
+  };
+
+  // ---- Editing an existing special week ----
+  const startEditWeek = (week) => {
+    setEditingWeekId(week.id);
+    setWeekEdit({
+      title: week.title,
+      emoji: week.emoji,
+      subtitle: week.subtitle || '',
+      newDate: '',
+      days: week.days.map(d => ({
+        id: d.id,
+        date: d.date,
+        capacity: d.capacity == null ? '2' : String(d.capacity),
+        unlimited: d.capacity == null,
+        note: d.note || '',
+        time_label: d.time_label || '',
+        signups: weekActiveSignups(d).length,
+        remove: false
+      }))
+    });
+  };
+
+  const cancelEditWeek = () => {
+    setEditingWeekId(null);
+    setWeekEdit(null);
+  };
+
+  const updateEditDay = (i, patch) =>
+    setWeekEdit(p => ({ ...p, days: p.days.map((d, j) => (j === i ? { ...d, ...patch } : d)) }));
+
+  const addEditDay = () => {
+    setWeekEdit(p => {
+      if (!p.newDate) return p;
+      const existing = p.days.find(d => d.date === p.newDate);
+      if (existing) {
+        // Re-adding a day that was marked for removal just un-removes it.
+        return { ...p, newDate: '', days: p.days.map(d => (d.date === p.newDate ? { ...d, remove: false } : d)) };
+      }
+      const days = [
+        ...p.days,
+        { id: null, date: p.newDate, capacity: '2', unlimited: false, note: '', time_label: '', signups: 0, remove: false }
+      ].sort((a, b) => a.date.localeCompare(b.date));
+      return { ...p, days, newDate: '' };
+    });
+  };
+
+  const toggleRemoveEditDay = (i) => {
+    const d = weekEdit.days[i];
+    if (!d.remove && d.signups > 0) {
+      const ok = confirm(
+        `${weekDayName(d.date)} already has ${d.signups} sign-up${d.signups === 1 ? '' : 's'}. ` +
+        'Removing the day deletes those sign-ups too. Continue?'
+      );
+      if (!ok) return;
+    }
+    if (!d.id && !d.remove) {
+      // Never saved — just drop it from the list.
+      setWeekEdit(p => ({ ...p, days: p.days.filter((_, j) => j !== i) }));
+      return;
+    }
+    updateEditDay(i, { remove: !d.remove });
+  };
+
+  const handleSaveWeekEdit = async () => {
+    if (!supabase || !weekEdit || editingWeekId == null) return;
+    const kept = weekEdit.days.filter(d => !d.remove);
+    if (!weekEdit.title.trim()) { alert('Title is required.'); return; }
+    if (kept.length === 0) { alert('Keep at least one day.'); return; }
+    setWeekSaving(true);
+    try {
+      const dates = kept.map(d => d.date).sort();
+      const { error: wErr } = await supabase
+        .from('volunteer_weeks')
+        .update({
+          title: weekEdit.title.trim(),
+          emoji: weekEdit.emoji.trim() || '🍎',
+          subtitle: weekEdit.subtitle.trim(),
+          start_date: dates[0],
+          end_date: dates[dates.length - 1]
+        })
+        .eq('id', editingWeekId);
+      if (wErr) throw wErr;
+
+      const toDelete = weekEdit.days.filter(d => d.remove && d.id).map(d => d.id);
+      if (toDelete.length) {
+        const { error } = await supabase.from('volunteer_week_days').delete().in('id', toDelete);
+        if (error) throw error;
+      }
+      const toRow = d => {
+        const cap = parseInt(d.capacity, 10);
+        return {
+          capacity: d.unlimited ? null : (Number.isFinite(cap) && cap > 0 ? cap : 1),
+          note: d.note.trim(),
+          time_label: d.time_label.trim()
+        };
+      };
+      for (const d of kept) {
+        if (d.id) {
+          const { error } = await supabase.from('volunteer_week_days').update(toRow(d)).eq('id', d.id);
+          if (error) throw error;
+        } else {
+          const { error } = await supabase
+            .from('volunteer_week_days')
+            .insert({ week_id: editingWeekId, date: d.date, ...toRow(d) });
+          if (error) throw error;
+        }
+      }
+      cancelEditWeek();
+      await loadWeeks();
+    } catch (error) {
+      console.error('Error saving week:', error);
+      alert('Error saving changes. Please try again.');
+    }
+    setWeekSaving(false);
+  };
+
+  // ---- Special orders on a special week ----
+  const emptyOrder = (weekId) => ({
+    weekId, id: null, family_id: '', label: '', people_count: 1, address: '', unit: '',
+    contact: '', instructions: 'Leave at door', notes: '', delivery_date: ''
+  });
+
+  const startOrder = (week, order) => {
+    if (orderForm?.dirty && !confirm('Discard the unsaved special order?')) return;
+    setOrderForm(order
+      ? {
+          weekId: week.id, id: order.id,
+          family_id: order.family_id ?? '', label: order.label || '', people_count: order.people_count || 1,
+          address: order.address || '', unit: order.unit || '', contact: order.contact || '',
+          instructions: order.instructions || 'Leave at door', notes: order.notes || '',
+          delivery_date: order.delivery_date || ''
+        }
+      : emptyOrder(week.id));
+  };
+
+  const setOrderField = (name, value) => setOrderForm(prev => ({ ...prev, [name]: value, dirty: true }));
+
+  // Typing an existing family number fills in that family's details — and
+  // refills them if the number is corrected to a different family.
+  const prefillOrderFromFamily = () => {
+    const num = parseInt(orderForm?.family_id, 10);
+    const fam = Number.isFinite(num) ? families.find(f => f.family_id === num) : null;
+    if (!fam) return;
+    setOrderForm(prev => {
+      if (prev.prefilledFrom === fam.family_id) return prev;
+      return {
+        ...prev,
+        prefilledFrom: fam.family_id,
+        address: fam.address || '',
+        unit: fam.unit || '',
+        contact: fam.contact || '',
+        instructions: fam.instructions || 'Leave at door',
+        people_count: fam.people_count || 1
+      };
+    });
+  };
+
+  const handleSaveOrder = async () => {
+    if (!supabase || !orderForm) return;
+    const famNum = orderForm.family_id === '' ? null : parseInt(orderForm.family_id, 10);
+    const fam = Number.isFinite(famNum) ? families.find(f => f.family_id === famNum) : null;
+    if (famNum != null && !fam) {
+      alert(`There is no family #${orderForm.family_id}. Clear the number or fix it.`);
+      return;
+    }
+    if (!orderForm.address.trim() && !(fam && fam.address)) {
+      alert('Enter an address (or a family number that has one).');
+      return;
+    }
+    if (orderForm.delivery_date && parseDate(orderForm.delivery_date).getDay() > 4) {
+      alert('Pick a Sunday–Thursday delivery day — the kitchen does not run on Friday/Saturday.');
+      return;
+    }
+    setOrderSaving(true);
+    try {
+      const row = {
+        week_id: orderForm.weekId,
+        family_id: Number.isFinite(famNum) ? famNum : null,
+        label: orderForm.label.trim(),
+        people_count: parseInt(orderForm.people_count, 10) || 1,
+        address: orderForm.address.trim() || (fam?.address || ''),
+        unit: String(orderForm.unit || '').trim(),
+        contact: orderForm.contact.trim(),
+        instructions: orderForm.instructions.trim(),
+        notes: orderForm.notes.trim(),
+        delivery_date: orderForm.delivery_date || null
+      };
+      const q = orderForm.id
+        ? supabase.from('volunteer_week_orders').update(row).eq('id', orderForm.id)
+        : supabase.from('volunteer_week_orders').insert(row);
+      const { error } = await q;
+      if (error) throw error;
+      setOrderForm(null);
+      await loadWeeks();
+    } catch (error) {
+      console.error('Error saving special order:', error);
+      alert('Could not save the special order. Please try again.');
+    }
+    setOrderSaving(false);
+  };
+
+  const handleDeleteOrder = async (order) => {
+    if (!supabase) return;
+    if (!confirm(`Delete special order ${orderTitle(order)}?`)) return;
+    try {
+      const { error } = await supabase.from('volunteer_week_orders').delete().eq('id', order.id);
+      if (error) throw error;
+      await loadWeeks();
+    } catch (error) {
+      console.error('Error deleting special order:', error);
+      alert('Could not delete the special order. Please try again.');
     }
   };
 
@@ -285,8 +1193,9 @@ export default function AdminPage() {
     let thisWeekSlots = 0;
     deliveryDates.forEach(date => {
       const dayName = dayNames[date.getDay()];
+      const dStr = toDateStr(date);
       const familiesForDay = activeFamilies.filter(f =>
-        !f.delivery_days || f.delivery_days.includes(dayName)
+        (!f.delivery_days || f.delivery_days.includes(dayName)) && !isDayPaused(f, dStr)
       );
       totalSlots += familiesForDay.length;
       if (date >= thisWeekStart && date <= thisWeekEnd) {
@@ -318,7 +1227,7 @@ export default function AdminPage() {
       const dateStr = date.toISOString().split('T')[0];
       const dayName = dayNames[date.getDay()];
       const familiesForDay = activeFamilies.filter(f =>
-        !f.delivery_days || f.delivery_days.includes(dayName)
+        (!f.delivery_days || f.delivery_days.includes(dayName)) && !isDayPaused(f, toDateStr(date))
       );
 
       familiesForDay.forEach(family => {
@@ -411,6 +1320,72 @@ export default function AdminPage() {
     return date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
+  // Sign-ups tab helpers (mirror of volunteer view)
+  const getSignupFamiliesForDate = (date) => {
+    const dayName = dayNames[date.getDay()];
+    const dateStr = toDateStr(date);
+    const list = families
+      .filter(f => f.active !== false)
+      .filter(f => !f.delivery_days || f.delivery_days.includes(dayName))
+      .filter(f => !isDayPaused(f, dateStr));
+    const groups = computeGroups(list);
+    return list
+      .map(f => ({ ...f, group: groups.get(f.family_id) ?? null }))
+      .sort((a, b) => {
+        const ag = a.group ?? Infinity;
+        const bg = b.group ?? Infinity;
+        if (ag !== bg) return ag - bg;
+        return Number(a.family_id) - Number(b.family_id);
+      });
+  };
+
+  const getSignupAssignmentForSlot = (date, familyId) => {
+    const slotKey = `${date.toISOString().split('T')[0]}-${familyId}`;
+    return assignments.find(a => a.slot_key === slotKey) || null;
+  };
+
+  const getSignupWeekDates = () => {
+    const dates = [];
+    const start = new Date(signupsWeekStart);
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+      if (d.getDay() >= 0 && d.getDay() <= 4) dates.push(d);
+    }
+    return dates;
+  };
+
+  const navigateSignupDay = (direction) => {
+    const newDate = new Date(signupsDate);
+    do {
+      newDate.setDate(newDate.getDate() + direction);
+    } while (newDate.getDay() === 5 || newDate.getDay() === 6);
+    if (newDate >= DELIVERY_RANGE_START && newDate <= DELIVERY_RANGE_END) {
+      setSignupsDate(newDate);
+    }
+  };
+
+  const navigateSignupWeek = (direction) => {
+    const newStart = new Date(signupsWeekStart);
+    newStart.setDate(signupsWeekStart.getDate() + direction * 7);
+    if (newStart >= DELIVERY_RANGE_START && newStart <= DELIVERY_RANGE_END) {
+      setSignupsWeekStart(newStart);
+    }
+  };
+
+  const goToTodaySignups = () => {
+    setSignupsDate(getInitialDeliveryDate());
+    setSignupsWeekStart(getInitialWeekStart());
+  };
+
+  const formatShortDate = (date) => `${monthNames[date.getMonth()]} ${date.getDate()}`;
+  const formatFullDate = (date) =>
+    `${dayNames[date.getDay()]}, ${monthNames[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
+  const isSameDay = (date) => {
+    const today = new Date();
+    return date.toDateString() === today.toDateString();
+  };
+
   // Filter history records
   const getFilteredHistory = () => {
     let filtered = [...allRecords];
@@ -467,9 +1442,23 @@ export default function AdminPage() {
 
   return (
     <div className="admin-container">
+      {GOOGLE_MAPS_KEY && !googleFailed && (
+        <Script
+          src={`https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_KEY}&libraries=places&v=weekly&loading=async`}
+          strategy="afterInteractive"
+          onLoad={() => setGoogleReady(true)}
+          onError={() => {
+            console.warn('Google Maps API failed to load — falling back to manual address entry.');
+            setGoogleFailed(true);
+          }}
+        />
+      )}
       <header className="admin-header">
         <h1>Kitchen of Kindness - Admin</h1>
-        <a href="/" className="back-link">← Back to Sign-Up Page</a>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+          <a href="/admin/live" className="admin-live-link">🎮 Kitchen Live</a>
+          <a href="/" className="back-link">← Back to Sign-Up Page</a>
+        </div>
       </header>
 
       {/* Tab Navigation */}
@@ -479,6 +1468,12 @@ export default function AdminPage() {
           onClick={() => setActiveTab('dashboard')}
         >
           Dashboard
+        </button>
+        <button
+          className={`tab-btn ${activeTab === 'signups' ? 'active' : ''}`}
+          onClick={() => setActiveTab('signups')}
+        >
+          Sign-ups
         </button>
         <button
           className={`tab-btn ${activeTab === 'assignments' ? 'active' : ''}`}
@@ -503,6 +1498,18 @@ export default function AdminPage() {
           onClick={() => setActiveTab('families')}
         >
           Families
+        </button>
+        <button
+          className={`tab-btn ${activeTab === 'weeks' ? 'active' : ''}`}
+          onClick={() => setActiveTab('weeks')}
+        >
+          Special Weeks
+        </button>
+        <button
+          className={`tab-btn ${activeTab === 'mail' ? 'active' : ''}`}
+          onClick={() => setActiveTab('mail')}
+        >
+          Mail{mailCount ? <span className="tab-count">{mailCount}</span> : null}
         </button>
       </div>
 
@@ -554,7 +1561,7 @@ export default function AdminPage() {
                     <div key={idx} className="unfilled-item">
                       <span className="unfilled-date">{slot.dayName.slice(0, 3)}, {slot.date.toLocaleDateString()}</span>
                       <span className="unfilled-family">Family #{slot.family.family_id}</span>
-                      <span className="unfilled-address">{slot.family.address}</span>
+                      <span className="unfilled-address">{formatAddress(slot.family.address, slot.family.unit)}</span>
                     </div>
                   ))}
                   {stats.upcomingUnfilled.length > 10 && (
@@ -587,6 +1594,340 @@ export default function AdminPage() {
               </section>
             )}
           </>
+        )}
+
+        {/* Sign-ups Tab — mirror of volunteer view with admin clear */}
+        {activeTab === 'signups' && (
+          <section className="admin-list-section">
+            <div className="section-header">
+              <h2>Volunteer Sign-ups</h2>
+            </div>
+            <p className="history-subtitle">
+              Same view volunteers see. Click any filled slot's <strong>Clear</strong> button to remove the assignment — works whether it's pending or already delivered.
+            </p>
+
+            <div className="view-toggle">
+              <button
+                className={`toggle-btn ${signupsView === 'today' ? 'active' : ''}`}
+                onClick={() => setSignupsView('today')}
+              >
+                Day
+              </button>
+              <button
+                className={`toggle-btn ${signupsView === 'week' ? 'active' : ''}`}
+                onClick={() => setSignupsView('week')}
+              >
+                Week View
+              </button>
+            </div>
+
+            {signupsView === 'today' && (
+              <>
+                <div className="today-stats-bar">
+                  <div className="today-date-display">
+                    <span className="today-day">{formatFullDate(signupsDate)}</span>
+                    {isSameDay(signupsDate) && <span className="today-badge-large">TODAY</span>}
+                  </div>
+                  {(() => {
+                    const familiesForDate = getSignupFamiliesForDate(signupsDate);
+                    let filled = 0;
+                    let delivered = 0;
+                    familiesForDate.forEach(f => {
+                      const a = getSignupAssignmentForSlot(signupsDate, f.family_id);
+                      if (a) {
+                        filled++;
+                        if (a.delivered_at) delivered++;
+                      }
+                    });
+                    const open = familiesForDate.length - filled;
+                    return (
+                      <div className="today-stats">
+                        <div className="today-stat">
+                          <span className="today-stat-value">{filled}</span>
+                          <span className="today-stat-label">Filled</span>
+                        </div>
+                        <div className="today-stat">
+                          <span className="today-stat-value open">{open}</span>
+                          <span className="today-stat-label">Open</span>
+                        </div>
+                        <div className="today-stat">
+                          <span className="today-stat-value delivered">{delivered}</span>
+                          <span className="today-stat-label">Delivered</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                <div className="day-nav">
+                  <button onClick={() => navigateSignupDay(-1)}>← Previous Day</button>
+                  {!isSameDay(signupsDate) && (
+                    <button className="today-btn" onClick={goToTodaySignups}>Go to Today</button>
+                  )}
+                  {(() => {
+                    const openIds = getSignupFamiliesForDate(signupsDate)
+                      .filter(f => !getSignupAssignmentForSlot(signupsDate, f.family_id))
+                      .map(f => f.family_id);
+                    return (
+                      <button
+                        className="today-btn"
+                        disabled={openIds.length === 0}
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(openIds.join('\n'));
+                            setCopiedFlash(true);
+                            setTimeout(() => setCopiedFlash(false), 1500);
+                          } catch (err) {
+                            console.error('Clipboard write failed:', err);
+                          }
+                        }}
+                      >
+                        {copiedFlash ? '✓ Copied!' : `📋 Copy open IDs (${openIds.length})`}
+                      </button>
+                    );
+                  })()}
+                  <button
+                    className="today-btn"
+                    onClick={() => window.open(`/admin/print-labels?date=${toDateStr(signupsDate)}&silent=1`, '_blank')}
+                    title="Sends the day's labels straight to the printer (no dialog when opened from the silent-print shortcut)"
+                  >
+                    🖨️ Print labels
+                  </button>
+                  <button
+                    className="today-btn"
+                    onClick={() => window.open(`/admin/print-labels?date=${toDateStr(signupsDate)}`, '_blank')}
+                    title="Shows the labels on screen first; Print there sends them to the printer"
+                  >
+                    👁 Preview
+                  </button>
+                  <button onClick={() => navigateSignupDay(1)}>Next Day →</button>
+                </div>
+
+                {printToast && (
+                  <div className={`print-toast ${printToast.kind}`}>
+                    {printToast.text}
+                    <button type="button" onClick={() => setPrintToast(null)} aria-label="Dismiss">✕</button>
+                  </div>
+                )}
+
+                <details className="printer-setup">
+                  <summary>🖨️ Printer setup (one time, on the kitchen PC)</summary>
+                  <ol>
+                    <li>
+                      <strong>Connect the JADENS and print its test page.</strong> USB is the most reliable. If you
+                      use Bluetooth, pair it in Windows, then in the JADENS printer's Properties → Ports pick the
+                      outgoing COM port (JADENS "Windows Bluetooth" guide). Confirm Windows' own test page prints.
+                    </li>
+                    <li>
+                      <strong>Make the JADENS the default printer.</strong> Windows 11: Settings → Bluetooth &amp; devices →
+                      Printers &amp; scanners → under <em>Printer preferences</em> turn <em>off</em> "Let Windows manage my
+                      default printer" → click the JADENS → <em>Set as default</em>. Windows 10: Settings → Devices →
+                      Printers &amp; scanners → untick "Let Windows manage my default printer" (bottom) → click the JADENS →
+                      <em> Manage</em> → <em>Set as default</em>.
+                    </li>
+                    <li>
+                      <strong>Set its paper to 4×6 — in both places.</strong> JADENS → <em>Printing preferences</em> (Windows 10:
+                      under Manage) → <em>Page Setup</em> tab → under Paper, <em>Name</em>: choose <strong>4*6</strong> (some
+                      driver versions call it 100 x 150 mm or 4.00 x 6.00) → Orientation <strong>Portrait</strong> → OK. If
+                      there is no 4*6 entry: <em>New</em> → name it 4x6, width 4 in / 100 mm, height 6 in / 150 mm → OK.
+                      Then JADENS → <em>Printer properties</em> → <em>Advanced</em> → <em>Printing Defaults…</em> → same
+                      Page Setup → pick 4*6 there too (needs an administrator account). Silent printing uses these
+                      defaults; the web page can't pick the paper itself.
+                    </li>
+                    <li>
+                      <strong>Create the silent-print shortcut.</strong> Right-click the desktop → New → Shortcut → paste
+                      one of these as the location, name it <em>Kitchen Admin (silent print)</em>:
+                      {[
+                        ['chrome', 'Chrome', '"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --kiosk-printing --no-first-run --no-default-browser-check --user-data-dir="C:\\Users\\Public\\KitchenPrint-Chrome" --new-window https://kitchenofkindness.app/admin'],
+                        ['edge', 'Edge', '"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --kiosk-printing --no-first-run --no-default-browser-check --user-data-dir="C:\\Users\\Public\\KitchenPrint-Edge" --new-window https://kitchenofkindness.app/admin']
+                      ].map(([key, name, cmd]) => (
+                        <div key={key} className="printer-setup-cmd">
+                          <span className="printer-setup-cmd-name">{name}</span>
+                          <code>{cmd}</code>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                await navigator.clipboard.writeText(cmd);
+                                setPrinterSetupCopied(key);
+                                setTimeout(() => setPrinterSetupCopied(null), 1500);
+                              } catch (err) {
+                                console.error('Clipboard write failed:', err);
+                              }
+                            }}
+                          >
+                            {printerSetupCopied === key ? '✓ Copied' : 'Copy'}
+                          </button>
+                        </div>
+                      ))}
+                      <small>
+                        The shortcut opens its own browser profile, so silent printing works even if a normal Chrome window
+                        is already open. Log in to the admin once in that window; it stays logged in. If Windows says
+                        "the file cannot be found": right-click your usual Chrome/Edge icon → Properties → copy its
+                        <em> Target</em> path and use it in place of the quoted path above (older Chrome installs live under
+                        C:\Program Files (x86)\Google\Chrome\Application\, a Chrome installed without admin rights under
+                        C:\Users\&lt;you&gt;\AppData\Local\Google\Chrome\Application\). The first launch may show the
+                        browser's own welcome screen — just close it; the page to log in to is the Kitchen admin.
+                      </small>
+                    </li>
+                    <li>
+                      <strong>Print a test label.</strong> Open the admin from that shortcut, log in, then click
+                      <button
+                        type="button"
+                        className="today-btn"
+                        style={{ margin: '0 6px' }}
+                        onClick={() => window.open('/admin/print-labels?test=1&silent=1', '_blank')}
+                      >
+                        🧪 Print test label
+                      </button>
+                      — you should get one 4×6 label with no dialog and no URL/date printed on it.
+                      <small>
+                        If a print dialog appears: close <em>every</em> window of that browser, reopen it from the
+                        shortcut, and try again (the silent flag only applies when it starts fresh). If it prints on the
+                        wrong size, re-check step 3. If a dialog is unavoidable once, choose JADENS · 4×6 · Margins
+                        Default · Headers and footers off · Print — that choice is remembered for the shortcut's profile.
+                      </small>
+                    </li>
+                    <li>
+                      <strong>Daily use.</strong> From that shortcut: Sign-ups → Day → <em>🖨️ Print labels</em>. All of the
+                      day's labels go to the printer as one job, one label per page, and the tab closes itself.
+                      <em> 👁 Preview</em> shows the labels on screen first (its Print button still prints without a dialog
+                      from the shortcut; open the admin in your normal browser when you want a real print dialog). The
+                      browser can't see printer-side problems (offline, out of labels) — keep an eye on the printer.
+                    </li>
+                  </ol>
+                </details>
+
+                <div className="today-slots">
+                  {getSignupFamiliesForDate(signupsDate).map(family => {
+                    const assignment = getSignupAssignmentForSlot(signupsDate, family.family_id);
+                    const slotClass = assignment
+                      ? assignment.delivered_at ? 'slot-delivered' : 'slot-taken'
+                      : 'slot-open';
+                    return (
+                      <div key={family.id} className={`slot slot-large ${slotClass}`}>
+                        <div className="slot-main">
+                          <div className="slot-family">
+                            Family #{family.family_id}
+                            <span className={groupBadge(family.group, family).className}>{groupBadge(family.group, family).text}</span>
+                          </div>
+                          <div className="slot-address">{formatAddress(family.address, family.unit)}</div>
+                          <div className="slot-meta">
+                            <span>📋 {formatNote(family.instructions || 'Leave at door')}</span>
+                            {family.contact && <span>📞 {family.contact}</span>}
+                          </div>
+                        </div>
+                        {assignment ? (
+                          <div className="slot-volunteer">
+                            <div className="volunteer-info">
+                              <span className="volunteer-name">
+                                {assignment.delivered_at ? '✅' : '✓'} {assignment.volunteer_name}
+                              </span>
+                              {assignment.volunteer_phone && (
+                                <span className="volunteer-phone">📞 {assignment.volunteer_phone}</span>
+                              )}
+                              {assignment.delivered_at && <span className="delivered-badge">DELIVERED</span>}
+                            </div>
+                            <button
+                              className="admin-cancel-btn"
+                              onClick={() => handleCancelAssignment(assignment)}
+                              title={assignment.delivered_at ? 'Clear this delivery' : 'Cancel this sign-up'}
+                            >
+                              {assignment.delivered_at ? '✕ Clear' : '✕ Cancel'}
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="slot-volunteer">
+                            <span className="open-badge">OPEN</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            {signupsView === 'week' && (
+              <>
+                <div className="week-nav">
+                  <button
+                    onClick={() => navigateSignupWeek(-1)}
+                    disabled={signupsWeekStart <= DELIVERY_RANGE_START}
+                  >
+                    ← Previous Week
+                  </button>
+                  <span className="week-title">
+                    Week of {formatShortDate(signupsWeekStart)}, {signupsWeekStart.getFullYear()}
+                  </span>
+                  <button
+                    onClick={() => navigateSignupWeek(1)}
+                    disabled={signupsWeekStart >= new Date(2026, 5, 28)}
+                  >
+                    Next Week →
+                  </button>
+                </div>
+
+                <div className="calendar-grid">
+                  {getSignupWeekDates().map(date => (
+                    <div className="day-column" key={date.toISOString()}>
+                      <div className="day-header">
+                        <span className="day-name">
+                          {dayNames[date.getDay()]}
+                          {isSameDay(date) && <span className="today-badge">TODAY</span>}
+                        </span>
+                        <div className="day-date">{formatShortDate(date)}, {date.getFullYear()}</div>
+                      </div>
+                      <div className="slots-container">
+                        {getSignupFamiliesForDate(date).map(family => {
+                          const assignment = getSignupAssignmentForSlot(date, family.family_id);
+                          const slotClass = assignment
+                            ? assignment.delivered_at ? 'slot-delivered' : 'slot-taken'
+                            : 'slot-open';
+                          return (
+                            <div key={family.id} className={`slot ${slotClass}`}>
+                              <div className="slot-family">
+                                Family #{family.family_id}
+                                <span className={groupBadge(family.group, family).className}>{groupBadge(family.group, family).text}</span>
+                              </div>
+                              <div className="slot-address">{formatAddress(family.address, family.unit)}</div>
+                              <div className="slot-meta">
+                                <span>📋 {formatNote(family.instructions || 'Leave at door')}</span>
+                              </div>
+                              {assignment ? (
+                                <div className="slot-volunteer">
+                                  <div className="volunteer-info">
+                                    <span className="volunteer-name">
+                                      {assignment.delivered_at ? '✅' : '✓'} {assignment.volunteer_name}
+                                    </span>
+                                    {assignment.volunteer_phone && (
+                                      <span className="volunteer-phone">📞 {assignment.volunteer_phone}</span>
+                                    )}
+                                    {assignment.delivered_at && <span className="delivered-badge">DELIVERED</span>}
+                                  </div>
+                                  <button
+                                    className="admin-cancel-btn"
+                                    onClick={() => handleCancelAssignment(assignment)}
+                                    title={assignment.delivered_at ? 'Clear this delivery' : 'Cancel this sign-up'}
+                                  >
+                                    {assignment.delivered_at ? '✕ Clear' : '✕ Cancel'}
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="slot-volunteer">
+                                  <span className="open-badge">OPEN</span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </section>
         )}
 
         {/* Assignments Tab */}
@@ -644,6 +1985,13 @@ export default function AdminPage() {
                       <span className="cell-date">{formatDateTime(assignment.created_at)}</span>
                       <span className={`cell-status ${assignment.delivered_at ? 'status-delivered' : 'status-pending'}`}>
                         {assignment.delivered_at ? '✅ Delivered' : '🕐 Pending'}
+                        <button
+                          className="admin-cancel-btn"
+                          onClick={() => handleCancelAssignment(assignment)}
+                          title={assignment.delivered_at ? 'Clear this delivery' : 'Cancel this sign-up'}
+                        >
+                          {assignment.delivered_at ? '✕ Clear' : '✕ Cancel'}
+                        </button>
                       </span>
                     </div>
                   );
@@ -767,6 +2115,345 @@ export default function AdminPage() {
           </section>
         )}
 
+        {/* Special Weeks Tab — holiday prep sign-ups */}
+        {activeTab === 'weeks' && (
+          <>
+            <section className="admin-form-section">
+              <h2>Create a Special Week</h2>
+              <p className="history-subtitle">
+                A standalone, phone-friendly sign-up page for a run of kitchen days (e.g. holiday prep). Each day gets its own spot count; volunteers pick a day and sign up.
+              </p>
+              <form onSubmit={handleCreateWeek} className="admin-form">
+                <div className="form-group">
+                  <label>Title *</label>
+                  <input
+                    type="text"
+                    value={weekForm.title}
+                    onChange={e => setWeekForm(p => ({ ...p, title: e.target.value }))}
+                    placeholder="Sukkot Prep Week"
+                    required
+                  />
+                  {weekForm.title && weekForm.start_date && (
+                    <small style={{ display: 'block', marginTop: 4, color: '#666' }}>
+                      Link will be: /week/{slugify(weekForm.title, weekForm.start_date)}
+                    </small>
+                  )}
+                </div>
+                <div className="form-group">
+                  <label>Emoji</label>
+                  <input
+                    type="text"
+                    value={weekForm.emoji}
+                    onChange={e => setWeekForm(p => ({ ...p, emoji: e.target.value }))}
+                    placeholder="🍎🍯"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Subtitle (optional)</label>
+                  <input
+                    type="text"
+                    value={weekForm.subtitle}
+                    onChange={e => setWeekForm(p => ({ ...p, subtitle: e.target.value }))}
+                    placeholder="Help us get the kitchen ready — pick a day and come cook with us!"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Start date *</label>
+                  <input
+                    type="date"
+                    value={weekForm.start_date}
+                    onChange={e => setWeekForm(p => ({ ...p, start_date: e.target.value }))}
+                    required
+                  />
+                </div>
+                <div className="form-group">
+                  <label>End date *</label>
+                  <input
+                    type="date"
+                    value={weekForm.end_date}
+                    onChange={e => setWeekForm(p => ({ ...p, end_date: e.target.value }))}
+                    required
+                  />
+                </div>
+                {weekFormDates.length > 0 && (
+                  <div className="form-group">
+                    <label>Spots per day</label>
+                    <div className="week-form-days">
+                      {weekFormDates.map(date => {
+                        const d = weekForm.days[date] || { capacity: '2', unlimited: false, note: '' };
+                        return (
+                          <div key={date} className="week-form-day">
+                            <span><strong>{weekDayName(date).slice(0, 3)}</strong> {weekShortDate(date)}</span>
+                            <input
+                              type="text"
+                              value={d.time_label || ''}
+                              placeholder="Time (e.g. 10am – 2pm)"
+                              onChange={e => updateWeekFormDay(date, { time_label: e.target.value })}
+                            />
+                            <input
+                              type="number"
+                              min="1"
+                              max="200"
+                              value={d.capacity}
+                              disabled={d.unlimited}
+                              onChange={e => updateWeekFormDay(date, { capacity: e.target.value })}
+                            />
+                            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 500 }}>
+                              <input
+                                type="checkbox"
+                                checked={d.unlimited}
+                                onChange={e => updateWeekFormDay(date, { unlimited: e.target.checked })}
+                              />
+                              Unlimited
+                            </label>
+                            <input
+                              type="text"
+                              value={d.note}
+                              placeholder="Note (e.g. Big cooking day!)"
+                              onChange={e => updateWeekFormDay(date, { note: e.target.value })}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                <div className="form-buttons">
+                  <button type="submit" className="btn-primary" disabled={weekSaving}>
+                    {weekSaving ? 'Creating…' : 'Create week'}
+                  </button>
+                </div>
+              </form>
+            </section>
+
+            <section className="admin-list-section">
+              <h2>Special Weeks ({weeks.length})</h2>
+              {weeks.length === 0 ? (
+                <p>No special weeks yet. Create one above.</p>
+              ) : (
+                weeks.map(week => {
+                  const total = week.days.reduce((s, d) => s + weekActiveSignups(d).length, 0);
+                  const url = `${typeof window !== 'undefined' ? window.location.origin : ''}/week/${week.slug}`;
+                  return (
+                    <div key={week.id} className={`week-admin-card ${week.active ? '' : 'closed'}`}>
+                      <div className="week-admin-head">
+                        <div>
+                          <div className="week-admin-title">{week.emoji} {week.title}</div>
+                          <div className="week-admin-meta">
+                            {weekShortDate(week.start_date)} – {weekShortDate(week.end_date)} · {total} sign-up{total === 1 ? '' : 's'} · {week.active ? 'Open' : 'Closed'}
+                            <br />
+                            <a href={`/week/${week.slug}`} target="_blank" rel="noreferrer">{url}</a>
+                          </div>
+                        </div>
+                        <div className="week-admin-actions">
+                          <button onClick={() => copyWeekText(`${week.id}-link`, url)}>
+                            {weekCopied === `${week.id}-link` ? '✓ Copied' : '🔗 Copy link'}
+                          </button>
+                          <button onClick={() => copyWeekText(`${week.id}-blurb`, buildWeekBlurb(week))}>
+                            {weekCopied === `${week.id}-blurb` ? '✓ Copied' : '📋 Copy WhatsApp blurb'}
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (editingWeekId === week.id) cancelEditWeek();
+                              startOrder(week, null);
+                              setTimeout(() => document.getElementById(`order-form-${week.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+                            }}
+                            title="Add a family / box to this week's special orders"
+                          >
+                            ➕ Add family
+                          </button>
+                          <button onClick={() => (editingWeekId === week.id ? cancelEditWeek() : startEditWeek(week))}>
+                            {editingWeekId === week.id ? 'Cancel edit' : '✏️ Edit'}
+                          </button>
+                          <button onClick={() => handleToggleWeekActive(week)}>
+                            {week.active ? 'Close sign-ups' : 'Reopen'}
+                          </button>
+                          <button className="danger" onClick={() => handleDeleteWeek(week)}>Delete</button>
+                        </div>
+                      </div>
+                      {editingWeekId === week.id && weekEdit && (
+                        <div style={{ marginTop: 14 }}>
+                          <div className="week-edit-fields">
+                            <input
+                              type="text"
+                              value={weekEdit.title}
+                              onChange={e => setWeekEdit(p => ({ ...p, title: e.target.value }))}
+                              placeholder="Title"
+                            />
+                            <input
+                              type="text"
+                              value={weekEdit.emoji}
+                              onChange={e => setWeekEdit(p => ({ ...p, emoji: e.target.value }))}
+                              placeholder="Emoji"
+                            />
+                          </div>
+                          <input
+                            type="text"
+                            value={weekEdit.subtitle}
+                            onChange={e => setWeekEdit(p => ({ ...p, subtitle: e.target.value }))}
+                            placeholder="Subtitle (optional)"
+                            style={{ width: '100%', marginBottom: 10, padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: 8, fontFamily: 'inherit', fontSize: '0.9rem' }}
+                          />
+                          <div style={{ fontSize: '0.78rem', color: '#64748b', margin: '4px 0' }}>
+                            Each day: time · spots · unlimited · note. Removed days disappear from the volunteer page.
+                          </div>
+                          {weekEdit.days.map((d, i) => (
+                            <div key={d.date} className={`week-edit-day ${d.remove ? 'removed' : ''}`}>
+                              <span>
+                                <strong>{weekDayName(d.date).slice(0, 3)}</strong> {weekShortDate(d.date)}
+                                {d.signups > 0 && <small style={{ color: '#64748b' }}> · {d.signups} signed up</small>}
+                              </span>
+                              <input
+                                type="text"
+                                value={d.time_label}
+                                placeholder="Time (e.g. 10am – 2pm)"
+                                onChange={e => updateEditDay(i, { time_label: e.target.value })}
+                              />
+                              <input
+                                type="number"
+                                min="1"
+                                max="200"
+                                value={d.capacity}
+                                disabled={d.unlimited}
+                                onChange={e => updateEditDay(i, { capacity: e.target.value })}
+                              />
+                              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 500 }}>
+                                <input
+                                  type="checkbox"
+                                  checked={d.unlimited}
+                                  onChange={e => updateEditDay(i, { unlimited: e.target.checked })}
+                                />
+                                Unlimited
+                              </label>
+                              <input
+                                type="text"
+                                value={d.note}
+                                placeholder="Note"
+                                onChange={e => updateEditDay(i, { note: e.target.value })}
+                              />
+                              <button type="button" className="admin-cancel-btn" onClick={() => toggleRemoveEditDay(i)}>
+                                {d.remove ? 'Undo' : '✕ Remove'}
+                              </button>
+                            </div>
+                          ))}
+                          <div className="week-edit-add">
+                            <input
+                              type="date"
+                              value={weekEdit.newDate}
+                              onChange={e => setWeekEdit(p => ({ ...p, newDate: e.target.value }))}
+                            />
+                            <button type="button" onClick={addEditDay} disabled={!weekEdit.newDate}>+ Add day</button>
+                          </div>
+                          <div className="form-buttons" style={{ marginTop: 12 }}>
+                            <button type="button" className="btn-secondary" onClick={cancelEditWeek} disabled={weekSaving}>Cancel</button>
+                            <button type="button" className="btn-primary" onClick={handleSaveWeekEdit} disabled={weekSaving}>
+                              {weekSaving ? 'Saving…' : 'Save changes'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      {editingWeekId !== week.id && (
+                        <div className="week-orders">
+                          <h4>✨ Special orders ({week.orders.length}) — extra deliveries the kitchen sees under "Special Week"</h4>
+                          {week.orders.length === 0 && <div className="order-row"><span className="muted">None yet.</span></div>}
+                          {week.orders.map(o => (
+                            <div key={o.id} className="order-row">
+                              <strong>{orderTitle(o)}</strong>
+                              <span>{o.people_count} ppl</span>
+                              <span>
+                                {o.address ? formatAddress(o.address, o.unit) : <span className="muted">no address</span>}
+                              </span>
+                              <span className="muted">
+                                {o.delivery_date ? `${weekDayName(o.delivery_date)} ${weekShortDate(o.delivery_date)}` : 'Every day'}
+                                {[o.instructions, o.notes].filter(Boolean).length ? ` · ${[o.instructions, o.notes].filter(Boolean).join(' — ')}` : ''}
+                              </span>
+                              <span>
+                                <button type="button" onClick={() => startOrder(week, o)}>Edit</button>
+                                <button type="button" className="danger" onClick={() => handleDeleteOrder(o)}>✕</button>
+                              </span>
+                            </div>
+                          ))}
+                          {orderForm && orderForm.weekId === week.id ? (
+                            <div className="order-form" id={`order-form-${week.id}`}>
+                              <input
+                                type="number" placeholder="Family # (optional)" value={orderForm.family_id} autoFocus
+                                onChange={e => setOrderField('family_id', e.target.value)} onBlur={prefillOrderFromFamily}
+                              />
+                              <input type="text" placeholder="Name / label (if no family #)" value={orderForm.label} onChange={e => setOrderField('label', e.target.value)} />
+                              <input type="number" min="1" max="50" placeholder="People" value={orderForm.people_count} onChange={e => setOrderField('people_count', e.target.value)} />
+                              <select value={orderForm.delivery_date} onChange={e => setOrderField('delivery_date', e.target.value)}>
+                                <option value="">Every kitchen day of the week</option>
+                                {week.days.filter(d => parseDate(d.date).getDay() <= 4).map(d => (
+                                  <option key={d.id} value={d.date}>{weekDayName(d.date)} {weekShortDate(d.date)}</option>
+                                ))}
+                                {orderForm.delivery_date && !week.days.some(d => d.date === orderForm.delivery_date) && (
+                                  <option value={orderForm.delivery_date}>
+                                    {weekDayName(orderForm.delivery_date)} {weekShortDate(orderForm.delivery_date)} (no longer in this week)
+                                  </option>
+                                )}
+                              </select>
+                              <input className="span2" type="text" placeholder="Address" value={orderForm.address} onChange={e => setOrderField('address', e.target.value)} />
+                              <input type="text" placeholder="Unit / Apt #" value={orderForm.unit} onChange={e => setOrderField('unit', e.target.value)} />
+                              <input type="text" placeholder="Contact phone" value={orderForm.contact} onChange={e => setOrderField('contact', e.target.value)} />
+                              <select value={orderForm.instructions} onChange={e => setOrderField('instructions', e.target.value)}>
+                                <option value="Leave at door">Leave at door</option>
+                                <option value="Call when arrive">Call when arrive</option>
+                                <option value="Ring doorbell">Ring doorbell</option>
+                                <option value="Hand to resident">Hand to resident</option>
+                              </select>
+                              <input className="span2" type="text" placeholder="Notes" value={orderForm.notes} onChange={e => setOrderField('notes', e.target.value)} />
+                              <div className="actions">
+                                <button type="button" className="btn-secondary" onClick={() => setOrderForm(null)} disabled={orderSaving}>Cancel</button>
+                                <button type="button" className="btn-primary" onClick={handleSaveOrder} disabled={orderSaving}>
+                                  {orderSaving ? 'Saving…' : orderForm.id ? 'Save order' : 'Add order'}
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ marginTop: 8 }}>
+                              <button type="button" className="today-btn" onClick={() => startOrder(week, null)}>➕ Add family</button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {editingWeekId !== week.id && week.days.map(day => {
+                        const signups = weekActiveSignups(day);
+                        const left = weekSpotsLeft(day);
+                        return (
+                          <div key={day.id} className="week-day-row">
+                            <div className="day">
+                              {weekDayName(day.date)} <span style={{ color: '#64748b', fontWeight: 500 }}>{weekShortDate(day.date)}</span>
+                              {day.time_label && <div style={{ color: '#0891b2', fontSize: '0.8rem', fontWeight: 600 }}>🕐 {day.time_label}</div>}
+                              {day.note && <div style={{ color: '#b45309', fontSize: '0.8rem', fontWeight: 500 }}>{day.note}</div>}
+                            </div>
+                            <div className="cap">
+                              {day.capacity == null ? `${signups.length} · ∞` : `${signups.length}/${day.capacity}`}
+                              {left === 0 && <div style={{ color: '#b91c1c', fontSize: '0.75rem' }}>FULL</div>}
+                            </div>
+                            <div>
+                              {signups.length === 0 ? (
+                                <span style={{ color: '#94a3b8' }}>No one yet</span>
+                              ) : (
+                                signups.map(s => (
+                                  <span key={s.id} className="week-signup">
+                                    {s.volunteer_name}
+                                    {s.volunteer_phone && <small>· {s.volunteer_phone}</small>}
+                                    <button title="Remove" onClick={() => handleCancelWeekSignup(s, day)}>✕</button>
+                                  </span>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })
+              )}
+            </section>
+          </>
+        )}
+
         {/* Families Tab */}
         {activeTab === 'families' && (
           <>
@@ -779,51 +2466,71 @@ export default function AdminPage() {
 
               <form onSubmit={handleSubmit} className="admin-form">
                 <div className="form-group">
-                  <label>Address *</label>
+                  <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                    <span>Address *</span>
+                    {GOOGLE_MAPS_KEY && !googleFailed && (
+                      <button
+                        type="button"
+                        onClick={() => setGoogleFailed(true)}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: '#0066cc',
+                          cursor: 'pointer',
+                          textDecoration: 'underline',
+                          fontSize: 12,
+                          padding: 0
+                        }}
+                      >
+                        ✎ Type manually (disable autocomplete)
+                      </button>
+                    )}
+                  </label>
                   <input
+                    ref={addressInputRef}
                     type="text"
                     name="address"
                     value={formData.address}
                     onChange={handleInputChange}
-                    placeholder="123 Main St, City, CA 91234"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && GOOGLE_MAPS_KEY && !googleFailed) e.preventDefault();
+                    }}
+                    placeholder={GOOGLE_MAPS_KEY && !googleFailed ? 'Start typing an address…' : '123 Main St, City, CA 91234'}
+                    autoComplete="off"
                     required
                   />
+                  {googleFailed && (
+                    <small style={{ display: 'block', marginTop: '4px', color: '#a05a00' }}>
+                      ⚠️ Address autocomplete off — type the address manually.
+                    </small>
+                  )}
                 </div>
 
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>People in Family</label>
-                    <input
-                      type="number"
-                      name="people_count"
-                      value={formData.people_count}
-                      onChange={handleInputChange}
-                      min="1"
-                      max="20"
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Bags</label>
-                    <input
-                      type="number"
-                      name="bags"
-                      value={formData.bags}
-                      onChange={handleInputChange}
-                      min="1"
-                      max="10"
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Extra Bags</label>
-                    <input
-                      type="number"
-                      name="extra_bags"
-                      value={formData.extra_bags}
-                      onChange={handleInputChange}
-                      min="0"
-                      max="10"
-                    />
-                  </div>
+                <div className="form-group">
+                  <label>Unit / Apt # (optional)</label>
+                  <input
+                    type="text"
+                    name="unit"
+                    value={formData.unit}
+                    onChange={handleInputChange}
+                    placeholder="e.g. 127 — leave empty if none"
+                    autoComplete="off"
+                  />
+                  <small style={{ display: 'block', marginTop: '4px', color: '#666' }}>
+                    Keep the street address above clean for autocomplete; put the apartment/unit number here.
+                  </small>
+                </div>
+
+                <div className="form-group">
+                  <label>People in Family</label>
+                  <input
+                    type="number"
+                    name="people_count"
+                    value={formData.people_count}
+                    onChange={handleInputChange}
+                    min="1"
+                    max="20"
+                  />
                 </div>
 
                 <div className="form-group">
@@ -865,6 +2572,40 @@ export default function AdminPage() {
                       </button>
                     ))}
                   </div>
+                  {editingFamily && activePauses(editingFamily).length > 0 && (
+                    <small style={{ display: 'block', marginTop: 6, color: '#92400e' }}>
+                      ⏸ Currently paused: {activePauses(editingFamily).map(describePause).join(' · ')}. Turning a day off
+                      again replaces its pause.
+                    </small>
+                  )}
+                  {removedDays.map(day => {
+                    const plan = planFor(`day:${day}`);
+                    return (
+                      <div key={day} className="pause-panel">
+                        <strong>Turning off {day} — for how long?</strong>
+                        <label>
+                          <input type="radio" checked={plan.mode === 'temp'} onChange={() => setPlan(`day:${day}`, { mode: 'temp' })} />
+                          Skip the next
+                          <input
+                            type="number" min="1" max="52" value={plan.weeks}
+                            onChange={e => setPlan(`day:${day}`, { mode: 'temp', weeks: e.target.value })}
+                          />
+                          week{Number(plan.weeks) === 1 ? '' : 's'} — then {day} comes back by itself
+                        </label>
+                        {plan.mode === 'temp' && anchorIsToday('day', day) && (
+                          <label style={{ marginLeft: 24 }}>
+                            <input type="checkbox" checked={!!plan.skipThisWeek} onChange={e => setPlan(`day:${day}`, { skipThisWeek: e.target.checked })} />
+                            Today's delivery already went out — start next week
+                          </label>
+                        )}
+                        {plan.mode === 'temp' && <small style={{ display: 'block', marginLeft: 24, color: '#92400e' }}>{previewPause('day', day, plan)}</small>}
+                        <label>
+                          <input type="radio" checked={plan.mode === 'permanent'} onChange={() => setPlan(`day:${day}`, { mode: 'permanent' })} />
+                          Remove {day} permanently
+                        </label>
+                      </div>
+                    );
+                  })}
                 </div>
 
                 <div className="form-group">
@@ -888,6 +2629,34 @@ export default function AdminPage() {
                     />
                     Saturday Meals (receives Saturday meal deliveries)
                   </label>
+                  {removedSaturday && (() => {
+                    const plan = planFor('saturday');
+                    return (
+                      <div className="pause-panel">
+                        <strong>Turning off Saturday meals — for how long?</strong>
+                        <label>
+                          <input type="radio" checked={plan.mode === 'temp'} onChange={() => setPlan('saturday', { mode: 'temp' })} />
+                          Skip the next
+                          <input
+                            type="number" min="1" max="52" value={plan.weeks}
+                            onChange={e => setPlan('saturday', { mode: 'temp', weeks: e.target.value })}
+                          />
+                          week{Number(plan.weeks) === 1 ? '' : 's'} — then Saturday meals come back by itself
+                        </label>
+                        {plan.mode === 'temp' && anchorIsToday('saturday', null) && (
+                          <label style={{ marginLeft: 24 }}>
+                            <input type="checkbox" checked={!!plan.skipThisWeek} onChange={e => setPlan('saturday', { skipThisWeek: e.target.checked })} />
+                            This week's Saturday bag already went out — start next week
+                          </label>
+                        )}
+                        {plan.mode === 'temp' && <small style={{ display: 'block', marginLeft: 24, color: '#92400e' }}>{previewPause('saturday', null, plan)}</small>}
+                        <label>
+                          <input type="radio" checked={plan.mode === 'permanent'} onChange={() => setPlan('saturday', { mode: 'permanent' })} />
+                          Remove Saturday meals permanently
+                        </label>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 <div className="form-group checkbox-group">
@@ -917,7 +2686,35 @@ export default function AdminPage() {
 
             {/* Families List */}
             <section className="admin-list-section">
-              <h2>All Families ({families.length})</h2>
+              <div className="section-header">
+                <h2>All Families ({families.length})</h2>
+                <button
+                  type="button"
+                  className="today-btn"
+                  onClick={handleBackfillCoordinates}
+                  disabled={backfillProgress !== null && backfillProgress.done < backfillProgress.total}
+                  title="Geocode families that don't yet have latitude/longitude so they can be grouped."
+                >
+                  {backfillProgress
+                    ? backfillProgress.done < backfillProgress.total
+                      ? `⏳ Geocoding ${backfillProgress.done}/${backfillProgress.total}${backfillProgress.current ? ` — #${backfillProgress.current}` : ''}`
+                      : `✓ Done (${backfillProgress.total - backfillProgress.failed.length}/${backfillProgress.total})`
+                    : '🌐 Backfill coordinates'}
+                </button>
+                <button
+                  type="button"
+                  className="today-btn"
+                  onClick={handleFormatAddresses}
+                  disabled={formatProgress !== null && formatProgress.done < formatProgress.total}
+                  title="Rewrite existing addresses into full 'street, city, CA zip' form. Unit numbers are preserved."
+                >
+                  {formatProgress
+                    ? formatProgress.done < formatProgress.total
+                      ? `⏳ Formatting ${formatProgress.done}/${formatProgress.total}${formatProgress.current ? ` — #${formatProgress.current}` : ''}`
+                      : `✓ Done (${formatProgress.total - formatProgress.failed.length}/${formatProgress.total})`
+                    : '🧹 Format addresses'}
+                </button>
+              </div>
 
               {loading ? (
                 <p>Loading...</p>
@@ -933,11 +2730,9 @@ export default function AdminPage() {
                           {family.active ? 'Active' : 'Inactive'}
                         </span>
                       </div>
-                      <div className="family-address">{family.address}</div>
+                      <div className="family-address">{formatAddress(family.address, family.unit)}</div>
                       <div className="family-details">
                         <span>👥 {family.people_count || '-'} people</span>
-                        <span>📦 {family.bags} bag{family.bags !== 1 ? 's' : ''}</span>
-                        {family.extra_bags > 0 && <span>+{family.extra_bags} extra</span>}
                         {family.contact && <span>📞 {family.contact}</span>}
                         {family.saturday_meals && <span>🗓 Sat Meals</span>}
                       </div>
@@ -951,6 +2746,16 @@ export default function AdminPage() {
                       )}
                       {family.notes && (
                         <div className="family-notes">📝 {family.notes}</div>
+                      )}
+                      {activePauses(family).length > 0 && (
+                        <div>
+                          {activePauses(family).map(p => (
+                            <span key={p.id} className="pause-chip">
+                              ⏸ {describePause(p)}
+                              <button type="button" onClick={() => handleResumePause(p)}>Resume now</button>
+                            </span>
+                          ))}
+                        </div>
                       )}
                       <div className="family-actions">
                         <button onClick={() => handleEdit(family)}>Edit</button>
@@ -967,6 +2772,16 @@ export default function AdminPage() {
               )}
             </section>
           </>
+        )}
+
+        {activeTab === 'mail' && (
+          <MailTab
+            families={families}
+            googleReady={googleReady && !googleFailed}
+            onFamiliesChanged={loadFamilies}
+            onCounts={c => setMailCount(c?.badge || 0)}
+            notice={mailNotice}
+          />
         )}
       </div>
     </div>
