@@ -582,11 +582,11 @@ export default function MailTab({ families = [], onFamiliesChanged, googleReady 
         onSubmit={async e => {
           e.preventDefault();
           const r = await loginAdmin(password);
-          if (r.ok && !r.legacy) {
+          if (r.ok) {
             setPassword('');
             setLoginError('');
             setSession('ready');
-          } else setLoginError(r.ok ? 'Mail needs the new server password.' : r.error);
+          } else setLoginError(r.error);
         }}
       >
         <h3>🔒 Mail</h3>

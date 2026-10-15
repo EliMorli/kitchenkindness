@@ -215,8 +215,8 @@ How it runs:
    **Preview** and **Development** have `MAIL_DRY_RUN=1`, so test deployments
    never send email or change Gmail, and Yes / No there change nothing. Then
    redeploy.
-5. **Delete `NEXT_PUBLIC_ADMIN_PASSWORD`** from Vercel and redeploy. From then on
-   the admin pages use the new password.
+5. **Delete `NEXT_PUBLIC_ADMIN_PASSWORD`** from Vercel. The site no longer uses
+   it: every admin page checks `ADMIN_PASSWORD` on the server.
 6. **Admin → Mail → ⚙ Settings → Connect Gmail.** Sign in with the kitchen's
    Google account. Google says the app isn't verified (it's your own app):
    click **Advanced → Go to Kitchen of Kindness**, tick the Gmail box, Allow.
