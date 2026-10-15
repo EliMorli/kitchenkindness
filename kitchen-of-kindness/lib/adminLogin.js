@@ -30,16 +30,6 @@ export async function loginAdmin(password) {
     return { ok: true };
   }
   if (res.status === 503) {
-    // The server password isn't set up yet: use the old check until it is.
-    // (Once NEXT_PUBLIC_ADMIN_PASSWORD is removed from Vercel this is gone.)
-    const legacy = process.env.NEXT_PUBLIC_ADMIN_PASSWORD;
-    if (legacy) {
-      if (password === legacy) {
-        setFlag();
-        return { ok: true, legacy: true };
-      }
-      return { ok: false, error: 'Incorrect admin password.' };
-    }
     const body = await res.json().catch(() => ({}));
     return {
       ok: false,
