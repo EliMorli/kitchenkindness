@@ -2,12 +2,30 @@
 
 export const MAIL_MODEL = 'claude-opus-5-5';
 
-export const LABEL_ROOT = 'Kitchen Requests';
+// Gmail folders (labels) the sync files emails into. No '&' in names: IMAP
+// uses it as an escape character in mailbox names.
+export const LABEL_ROOT = 'Kitchen of Kindness';
 export const LABELS = {
-  pending: `${LABEL_ROOT}/Pending`,
+  applications: `${LABEL_ROOT}/New Applications`,
   approved: `${LABEL_ROOT}/Approved`,
-  declined: `${LABEL_ROOT}/Declined`
+  declined: `${LABEL_ROOT}/Declined`,
+  volunteers: `${LABEL_ROOT}/Volunteers`,
+  donations: `${LABEL_ROOT}/Donations`,
+  questions: `${LABEL_ROOT}/Questions and Other`,
+  newsletters: `${LABEL_ROOT}/Newsletters and Ads`
 };
+
+// Claude's topic for an email that isn't a request -> its folder.
+export const TOPIC_FOLDER = {
+  volunteering: 'volunteers',
+  donation: 'donations',
+  vendor_or_newsletter: 'newsletters',
+  spam: 'newsletters'
+};
+
+// Automated mail that goes to "Newsletters and Ads" without Claude. No-reply
+// notifications, auto-replies and bounces stay in the inbox.
+export const NEWSLETTER_REASONS = ['mailing-list', 'bulk'];
 
 export const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'];
 
@@ -21,7 +39,7 @@ export const LIMITS = {
   sendsPerRun: 20,
   sendAttempts: 3,
   aiAttempts: 3,
-  firstRunDays: 7,
+  firstRunDays: 30, // the first check after connecting reads (and files) this far back
   replyCooldownDays: 7,
   staleClaimMinutes: 10,
   claimCheckHours: 24, // Sent Mail can't be checked this long -> "unclear", admin can resend

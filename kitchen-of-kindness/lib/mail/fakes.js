@@ -5,7 +5,7 @@
 import { createMemoryDb } from './memoryDb.js';
 import { createStore } from './store.js';
 import { planUidRead } from './gmail.js';
-import { DAYS } from './config.js';
+import { DAYS, LABEL_ROOT, LABELS } from './config.js';
 
 const CRLF = '\r\n';
 
@@ -168,9 +168,7 @@ export function createFakeGmail({ emails = SAMPLE_EMAILS, now = () => new Date()
     },
     async ensureLabels() {
       state.calls.push('ensureLabels');
-      ['Kitchen Requests', 'Kitchen Requests/Pending', 'Kitchen Requests/Approved', 'Kitchen Requests/Declined'].forEach(l =>
-        state.created.add(l)
-      );
+      [LABEL_ROOT, ...Object.values(LABELS)].forEach(l => state.created.add(l));
     },
     async setThreadState(tid, { add = [], remove = [], seen = false }) {
       state.calls.push(`label:${tid}`);

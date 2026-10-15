@@ -164,12 +164,17 @@ only on this page.
 
 Emails to the kitchen's Gmail become a review queue in the admin. Each new
 conversation from a real person gets an automatic "thank you, we'll get back to
-you" reply. Claude summarizes it and pulls out the household's details, and the
-request moves out of the inbox into the Gmail label **Kitchen Requests/Pending**.
-In the Mail tab the admin taps **Yes** (adds the family and sends the approval
-email) or **No** (filed in **Kitchen Requests/Declined**, no email). Both can be
-undone for 5 seconds. Emails that aren't requests stay in the inbox (shown under
-*Other*). Newsletters and automatic emails are ignored.
+you" reply. Claude summarizes it and pulls out the household's details. In the
+Mail tab the admin taps **Yes** (adds the family and sends the approval email)
+or **No** (no email). Both can be undone for 5 seconds.
+
+In Live mode every email is filed out of the inbox into a Gmail folder under
+**Kitchen of Kindness**: **New Applications**, **Approved**, **Declined**,
+**Volunteers**, **Donations**, **Questions and Other**, and **Newsletters and
+Ads** (mailing lists and promotions; these skip Claude). What isn't sorted yet,
+needs attention, or is an automatic notice (no-reply alerts, auto-replies,
+bounces) stays in the inbox. The first check after connecting Gmail reads and
+sorts the last 30 days.
 
 How it runs:
 - **The sync:** `/api/mail/sync` runs every 5 minutes (Supabase `pg_cron`), when

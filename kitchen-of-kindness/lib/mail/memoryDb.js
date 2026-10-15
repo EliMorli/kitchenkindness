@@ -15,7 +15,7 @@ const DEFAULTS = {
   mail_messages: () => ({
     request_id: null, inbox_uid: null, message_id_header: '', in_reply_to: '', references_header: '',
     from_name: '', from_email: '', reply_to_email: '', subject: '', automated_reason: '', auth_pass: false,
-    body_text: '', attachment_count: 0
+    body_text: '', attachment_count: 0, gmail_dirty: false
   }),
   mail_settings: () => ({
     mode: 'off', auto_reply_enabled: true, auto_reply_scope: 'all', auto_reply_since: null, auto_reply_body: '',
