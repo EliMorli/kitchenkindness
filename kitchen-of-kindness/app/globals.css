@@ -2706,3 +2706,37 @@ body {
 }
 .mail-simple-main > .mail-badge, .mail-simple-main > .mail-link { align-self: flex-start; }
 .mail-mode input { align-self: flex-start; }
+
+/* Privacy policy page */
+.privacy {
+  max-width: 720px;
+  margin: 24px auto 48px;
+  padding: 24px 20px;
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+  color: #1f2937;
+  line-height: 1.6;
+}
+.privacy h2 {
+  font-family: 'Fraunces', Georgia, serif;
+  font-size: 1.25rem;
+  margin: 24px 0 8px;
+}
+.privacy h2:first-child {
+  margin-top: 0;
+}
+.privacy ul {
+  padding-left: 20px;
+}
+.privacy li {
+  margin-bottom: 6px;
+}
+.privacy a {
+  color: #0891b2;
+}
+@media (max-width: 600px) {
+  .privacy {
+    margin: 16px;
+  }
+}
