@@ -27,13 +27,11 @@ test('first run: one reply per conversation, summaries, labels', async () => {
   assert.equal(byThread(w, 't1').message_count, 2);
   assert.equal(byThread(w, 't4').status, 'other');
   assert.equal(byThread(w, 't6').ai_fields.flags.includes('instructions_to_ai'), true);
-  // Requests left the inbox into Pending; the volunteer email stayed in the inbox.
+  // Each kind of email went to its folder and left the inbox.
   const labelsOf = key => [...w.gmail.labels.get(w.gmail.threadId(key))];
-  assert.ok(labelsOf('t2').includes('Kitchen Requests/Pending'));
-  assert.ok(!labelsOf('t2').includes('\\Inbox'));
-  assert.ok(labelsOf('t4').includes('\\Inbox'));
-  assert.ok(labelsOf('t5').includes('\\Inbox'));
-  assert.ok(!labelsOf('t5').includes('Kitchen Requests/Pending'));
+  assert.deepEqual(labelsOf('t2'), ['Kitchen of Kindness/New Applications']);
+  assert.deepEqual(labelsOf('t4'), ['Kitchen of Kindness/Volunteers']);
+  assert.deepEqual(labelsOf('t5'), ['Kitchen of Kindness/Newsletters and Ads']);
   // Nothing is left marked to fix.
   assert.ok(rows(w).every(x => !x.gmail_dirty));
 });
@@ -66,8 +64,8 @@ test('approval: family created once, approval email threaded, labels move', asyn
   assert.match(mail.text, /Monday, Wednesday and Thursday/);
   assert.equal(mail.auto, false);
   const labels = [...w.gmail.labels.get(req.gmail_thrid)];
-  assert.ok(labels.includes('Kitchen Requests/Approved'));
-  assert.ok(!labels.includes('Kitchen Requests/Pending'));
+  assert.ok(labels.includes('Kitchen of Kindness/Approved'));
+  assert.ok(!labels.includes('Kitchen of Kindness/New Applications'));
   assert.ok(w.gmail.seenThreads.has(req.gmail_thrid));
   // A later email in that conversation needs attention and goes back to the inbox, no auto-reply.
   w.gmail.deliver({ thread: 't2', from: '"Dana Weiss, LCSW" <dana.weiss@example-clinic.org>', subject: 'Re: Referral', body: 'He moved.', replyTo: 0 });
@@ -226,8 +224,16 @@ test('Claude failing three times still puts the request in front of the admin', 
 });
 
 test('label targets', () => {
-  assert.deepEqual(labelTarget({ status: 'pending', kind: 'request' }), { label: 'pending', inInbox: false, seen: false });
-  assert.deepEqual(labelTarget({ status: 'other', kind: 'other' }), { label: 'none', inInbox: true, seen: false });
+  assert.deepEqual(labelTarget({ status: 'pending', kind: 'request' }), { label: 'applications', inInbox: false, seen: false });
+  assert.deepEqual(labelTarget({ status: 'other', kind: 'other' }), { label: 'questions', inInbox: false, seen: false });
+  const topic = t => labelTarget({ status: 'other', kind: 'other', ai_fields: { other_topic: t } }).label;
+  assert.deepEqual(
+    ['volunteering', 'donation', 'vendor_or_newsletter', 'spam', 'question', 'thanks', 'update_existing', 'other', 'none'].map(topic),
+    ['volunteers', 'donations', 'newsletters', 'newsletters', 'questions', 'questions', 'questions', 'questions', 'questions']
+  );
+  // Not sorted yet: stays in the inbox.
+  assert.deepEqual(labelTarget({ status: 'pending', kind: 'unknown' }), { label: 'none', inInbox: true, seen: false });
+  assert.deepEqual(labelTarget({ status: 'other', kind: 'other', needs_attention: true }).inInbox, true);
   assert.deepEqual(labelTarget({ status: 'declined', kind: 'request' }), { label: 'declined', inInbox: false, seen: true });
   assert.deepEqual(labelTarget({ status: 'approved', kind: 'request', needs_attention: true }), { label: 'approved', inInbox: true, seen: false });
   assert.equal(SAMPLE_EMAILS.length, 7);
@@ -475,7 +481,7 @@ test('Gmail threads: replies in another conversation are labelled with the reque
   await run(w);
   for (const t of ['r1', 'r2']) {
     const labels = [...w.gmail.labels.get(w.gmail.threadId(t))];
-    assert.ok(labels.includes('Kitchen Requests/Declined'), t);
+    assert.ok(labels.includes('Kitchen of Kindness/Declined'), t);
     assert.ok(!labels.includes('\\Inbox'), t);
     assert.ok(w.gmail.seenThreads.has(w.gmail.threadId(t)), t);
   }
@@ -684,6 +690,20 @@ test('a conversation that is another request’s own keeps that request’s labe
   await run(w);
   await w.store.updateRequest(r1.id, { needs_attention: true, gmail_dirty: true });
   await run(w);
-  assert.ok(w.gmail.labels.get(w.gmail.threadId('t2')).has('Kitchen Requests/Pending'));
-  assert.ok(!w.gmail.labels.get(w.gmail.threadId('t2')).has('Kitchen Requests/Approved'));
+  assert.ok(w.gmail.labels.get(w.gmail.threadId('t2')).has('Kitchen of Kindness/New Applications'));
+  assert.ok(!w.gmail.labels.get(w.gmail.threadId('t2')).has('Kitchen of Kindness/Approved'));
+});
+
+test('newsletters are filed only in Live, and never out of a request conversation', async () => {
+  const w = createFakeWorld({ mode: 'shadow' });
+  await run(w);
+  const t5 = w.gmail.threadId('t5');
+  assert.deepEqual([...w.gmail.labels.get(t5)], ['\\Inbox']); // Shadow changes nothing in Gmail
+  // An automatic reply (out of office) inside a request's conversation.
+  w.gmail.deliver({ thread: 't2', from: 'Dana <dana.weiss@example-clinic.org>', subject: 'Re: Referral', body: 'Away', headers: { Precedence: 'bulk' }, replyTo: 0 });
+  await w.store.updateSettings({ mode: 'live' });
+  await run(w);
+  assert.deepEqual([...w.gmail.labels.get(t5)], ['Kitchen of Kindness/Newsletters and Ads']);
+  assert.deepEqual([...w.gmail.labels.get(w.gmail.threadId('t2'))], ['Kitchen of Kindness/New Applications']);
+  assert.ok(w.db.tables.mail_messages.every(m => !m.gmail_dirty));
 });

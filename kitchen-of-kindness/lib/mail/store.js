@@ -33,6 +33,10 @@ export function createStore(db) {
       return inserted || store.requestByThread(row.gmail_thrid);
     },
     insertMessage: row => db.insert('mail_messages', row, { onConflictIgnore: 'gmail_msgid' }).then(one),
+    // Automated emails waiting to be filed into "Newsletters and Ads".
+    listDirtyMessages: limit =>
+      db.select('mail_messages', { eq: { gmail_dirty: true }, columns: 'id,gmail_thrid', order: ['id', true], limit }),
+    updateMessage: (id, patch) => db.update('mail_messages', patch, { eq: { id } }).then(one),
     messagesFor: requestId => db.select('mail_messages', { eq: { request_id: requestId }, order: ['received_at', true] }),
     // How many emails are stored for a request, and the Gmail conversations
     // they are in (a reply can land in a new one).

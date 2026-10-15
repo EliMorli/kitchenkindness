@@ -1159,8 +1159,9 @@ function MailSettings({ onSaved, onUnauthorized, draft, showToast }) {
   const save = async () => {
     if (form.mode === 'live' && data.settings.mode !== 'live') {
       const ok = confirm(
-        `Turn on Live for ${data.sync?.gmail_user || 'the connected Gmail'}?\n\nNew emails from now on get the automatic reply, and requests move out of the inbox into the ` +
-          '"Kitchen Requests" folder in Gmail. Yes on a request adds the family and sends the approval email.'
+        `Turn on Live for ${data.sync?.gmail_user || 'the connected Gmail'}?\n\nNew emails from now on get the automatic reply, and emails are sorted out of the inbox into the ` +
+          '"Kitchen of Kindness" folders in Gmail (New Applications, Volunteers, Donations, Questions and Other, Newsletters and Ads). ' +
+          'Yes on a request adds the family and sends the approval email.'
       );
       if (!ok) return;
     }

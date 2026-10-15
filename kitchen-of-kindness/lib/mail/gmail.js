@@ -117,7 +117,7 @@ export function createGmail({ user, pass, accessToken }) {
 
     async ensureLabels() {
       const existing = new Set((await client.list()).map(m => m.path));
-      for (const path of [LABEL_ROOT, LABELS.pending, LABELS.approved, LABELS.declined]) {
+      for (const path of [LABEL_ROOT, ...Object.values(LABELS)]) {
         if (!existing.has(path)) await client.mailboxCreate(path);
       }
     },

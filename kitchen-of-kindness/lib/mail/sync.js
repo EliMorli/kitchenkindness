@@ -10,7 +10,7 @@
 // E, and leaves every queued email and label change for the real sync.
 
 import { simpleParser } from 'mailparser';
-import { DEFAULT_TEMPLATES, LABELS, LIMITS } from './config.js';
+import { DEFAULT_TEMPLATES, LABELS, LIMITS, NEWSLETTER_REASONS, TOPIC_FOLDER } from './config.js';
 import {
   authPass, automatedReason, bodyText, cleanBody, dbText, firstAddress, onNoReplyList, parseNoReplyList,
   replyKey, replyRecipient, suppressesAutoReply
@@ -29,14 +29,17 @@ const POISON_RETRIES = 3; // an email the database rejects this many times is sk
 const STUCK_RETRIES = 10;
 const STUCK_MS = 6 * 3_600_000;
 
-// Where a request's conversation should sit in Gmail.
+// Where a request's conversation should sit in Gmail: its folder, and out of
+// the inbox once sorted (back in the inbox when it needs attention). Not yet
+// sorted (Claude hasn't read it, or couldn't) stays in the inbox.
 export function labelTarget(r) {
   const decided = r.status === 'approved' || r.status === 'declined';
   const label =
     r.status === 'approved' ? 'approved'
       : r.status === 'declined' ? 'declined'
-        : r.status === 'pending' && r.kind === 'request' ? 'pending'
-          : 'none';
+        : r.status === 'pending' && r.kind === 'request' ? 'applications'
+          : r.status === 'other' && r.kind === 'other' ? TOPIC_FOLDER[r.ai_fields?.other_topic] || 'questions'
+            : 'none';
   return { label, inInbox: label === 'none' || !!r.needs_attention, seen: decided && !r.needs_attention };
 }
 
@@ -207,7 +210,8 @@ export async function runSync({
     const e = await readEmail(m);
     const { row, received } = e;
     if (e.reason) {
-      await store.insertMessage({ ...row, automated_reason: e.reason, body_text: '' });
+      // Newsletters wait to be filed (Live only, in phaseLabels).
+      await store.insertMessage({ ...row, automated_reason: e.reason, body_text: '', gmail_dirty: NEWSLETTER_REASONS.includes(e.reason) });
       report.automated += 1;
       return;
     }
@@ -633,6 +637,19 @@ export async function runSync({
       );
       if (found) report.labels.applied += 1;
       else report.labels.missing += 1;
+    }
+    // Newsletters and mailing lists (no request, no Claude).
+    for (const m of await store.listDirtyMessages(LIMITS.labelsPerRun)) {
+      if (timeLeft() < 5000) {
+        report.more = true;
+        break;
+      }
+      // A conversation that is a request keeps the request's folder.
+      if (!(await store.requestByThread(m.gmail_thrid))) {
+        const { found } = await gmail.setThreadState(m.gmail_thrid, { add: [LABELS.newsletters], remove: ['\\Inbox'] });
+        if (found) report.labels.applied += 1;
+      }
+      await store.updateMessage(m.id, { gmail_dirty: false });
     }
   }
 
