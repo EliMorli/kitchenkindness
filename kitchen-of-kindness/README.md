@@ -94,7 +94,7 @@ Edit the `families` array in `app/page.js`:
 
 ```javascript
 const families = [
-  { id: 350, address: "...", instructions: "...", contact: "...", bags: 3 },
+  { id: 350, address: "...", instructions: "...", contact: "...", people_count: 3 },
   // Add more families...
 ];
 ```
@@ -108,3 +108,134 @@ Update the `generateDeliveryDates()` function in `app/page.js` to change the sta
 - Next.js 14 (App Router)
 - Supabase (PostgreSQL database)
 - Vanilla CSS (no framework needed)
+
+
+## Printing delivery labels (kitchen PC)
+
+Labels are printed from `/admin/print-labels?date=YYYY-MM-DD` as ONE multi-page job
+(one 4x6 in page per label). Silent, dialog-free printing relies on three things:
+
+1. Chrome/Edge started from a shortcut with `--kiosk-printing --no-first-run
+   --no-default-browser-check` and its own `--user-data-dir` under
+   `C:\Users\Public\KitchenPrint-<browser>` (so the flag always applies, normal
+   browsing never changes the remembered printer, and no environment variable has to
+   expand inside the shortcut arguments). The admin's Sign-ups tab has a "Printer
+   setup" panel with copyable shortcut targets. In Chromium `window.print()` blocks
+   until the preview closes and `afterprint` fires even on Cancel, so the page
+   measures how long the call blocked to tell a silent print from a dialog.
+2. The JADENS set as the Windows default printer with 4x6 in as its default paper
+   (Printing preferences AND Printer properties → Advanced → Printing Defaults).
+   CSS cannot choose physical paper.
+3. `@page { size: 4in 6in; margin: 0 }` in the label page, which makes each page box
+   exactly one label and suppresses the browser header/footer. Keep it that way —
+   re-adding page margins brings the URL/date header back.
+
+Do not switch to a per-label `window.print()` loop: Chromium throttles repeated
+scripted prints and drops labels. `?test=1&silent=1` prints a single sample label
+for verifying the setup; `?pdf=1` renders without printing.
+
+## Kitchen Live (`/admin/live`)
+
+A phone-first, game-style view of one kitchen day for the admin (same admin
+password). A small 3D island shows the kitchen, a bag pile per delivery group,
+a van per group and the houses around the ring road. The day moves through four
+steps, stored per date in the `kitchen_days` table
+(`supabase-migrations/2026-10-13-add-kitchen-days.sql`):
+
+1. **Cooking**: the default; bags show as ghosts.
+2. **Packing**: recorded by the print tab as each print job starts, whichever
+   **Print labels** button opened it (kitchen page, admin panel or Kitchen
+   Live), with the label count (`printed_at`, `printed_labels`). It counts even
+   if the print dialog is cancelled or the browser never reports back; days
+   with nothing to print are never marked.
+3. **Delivering**: recorded by itself the first time the list is copied for the
+   volunteers' WhatsApp group, from Kitchen Live or the kitchen view (`copied_at`).
+   Volunteers claim groups in WhatsApp, so this stands in for sign-ups.
+4. **Delivered**: the admin taps **Delivered** (`delivered_at`).
+
+The big **Copy list** button copies the same text as the kitchen view's Copy
+list and sends the vans out. Any step can be marked or undone from the
+"Today's run" tracker. The page updates live (Supabase Realtime) when another
+device prints or copies; if the live connection drops it re-checks every 10
+seconds, and catches up as soon as it reconnects. `?date=YYYY-MM-DD` opens a given day. three.js loads
+only on this page.
+
+## Mail tab (`/admin` → Mail)
+
+Emails to the kitchen's Gmail become a review queue in the admin. Each new
+conversation from a real person gets an automatic "thank you, we'll get back to
+you" reply. Claude summarizes it and pulls out the household's details. In the
+Mail tab the admin taps **Yes** (adds the family and sends the approval email)
+or **No** (no email). Both can be undone for 5 seconds.
+
+In Live mode every email is filed out of the inbox into a Gmail folder under
+**Kitchen of Kindness**: **New Applications**, **Approved**, **Declined**,
+**Volunteers**, **Donations**, **Questions and Other**, and **Newsletters and
+Ads** (mailing lists and promotions; these skip Claude). What isn't sorted yet,
+needs attention, or is an automatic notice (no-reply alerts, auto-replies,
+bounces) stays in the inbox. The first check after connecting Gmail reads and
+sorts the last 30 days.
+
+How it runs:
+- **The sync:** `/api/mail/sync` runs every 5 minutes (Supabase `pg_cron`), when
+  the Mail tab opens, and on **Check now**. It reads new inbox mail, sends due
+  replies, writes summaries, sets Gmail labels, and sends approval emails.
+- **Modes** (Mail → ⚙ Settings):
+  - **Off:** nothing runs.
+  - **Shadow:** a practice run. It reads and summarizes only: nothing is sent,
+    Gmail isn't changed, and Yes adds nothing.
+  - **Live:** everything on. Only emails that arrive after switching to Live get
+    the automatic reply.
+- **Privacy:** the mail tables (`mail_requests`, `mail_messages`,
+  `mail_settings`) are private. RLS is on with no policies, so only the server
+  can read them, using `SUPABASE_SERVICE_ROLE_KEY`. Mail needs the admin password
+  on each device; the 🔒 button locks it again. Requester names stay in the Mail
+  tab and are never put into family notes or instructions, which print on labels.
+
+### Turning it on
+
+1. **Google sign-in (one time, about 10 minutes).** In Google Cloud Console, open
+   the project that has the Maps key → **Google Auth Platform**:
+   - **Branding**: app name "Kitchen of Kindness", your support email.
+   - **Audience**: user type **External**, then **Publish app** ("In
+     production"). Left in "Testing", Google ends the sign-in every 7 days.
+   - **Data access** → Add scope `https://mail.google.com/`.
+   - **Clients** → Create client → **Web application**. Authorized redirect URI:
+     `https://kitchenofkindness.app/api/mail/google/callback`. Copy the Client
+     ID and Client secret.
+2. **Claude API key.** At console.anthropic.com → API keys, create a key. Set a
+   monthly spend limit under Billing; each email costs a few cents.
+3. **Supabase service role key.** In the Supabase dashboard → Project Settings →
+   API, copy the `service_role` key (keep it secret).
+4. **Vercel → Settings → Environment Variables**, environment **Production only**:
+   - `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`: from step 1
+   - `ANTHROPIC_API_KEY`: from step 2
+   - `SUPABASE_SERVICE_ROLE_KEY`: from step 3
+   - `ADMIN_PASSWORD`: a **new** admin password (the old one was visible in
+     the website's code)
+   - `ADMIN_SESSION_SECRET` and `MAIL_CRON_SECRET`: two long random strings
+     (already added). Changing `ADMIN_SESSION_SECRET` means connecting Gmail
+     again.
+
+   **Preview** and **Development** have `MAIL_DRY_RUN=1`, so test deployments
+   never send email or change Gmail, and Yes / No there change nothing. Then
+   redeploy.
+5. **Delete `NEXT_PUBLIC_ADMIN_PASSWORD`** from Vercel. The site no longer uses
+   it: every admin page checks `ADMIN_PASSWORD` on the server.
+6. **Admin → Mail → ⚙ Settings → Connect Gmail.** Sign in with the kitchen's
+   Google account. Google says the app isn't verified (it's your own app):
+   click **Advanced → Go to Kitchen of Kindness**, tick the Gmail box, Allow.
+7. **Choose Shadow**, wait for a few emails and check the summaries. Then choose
+   **Live**.
+
+The mail check runs every 5 minutes from Supabase (`pg_cron`, see
+`supabase-migrations/2026-10-14-add-mail-sync-cron.sql`; the secret is in
+Supabase Vault as `mail_cron_secret`). If the Google password is changed or
+access is removed, Mail shows "Connect Gmail again".
+
+An app password still works instead of Google sign-in (`GMAIL_USER` +
+`GMAIL_APP_PASSWORD`), but a connected Google account is used first.
+
+Local testing without touching anything real: `MAIL_FAKE=1 ADMIN_PASSWORD=test
+ADMIN_SESSION_SECRET=<anything long> npm run dev` uses a made-up inbox and an
+in-memory database. `npm test` runs the mail and session tests.
